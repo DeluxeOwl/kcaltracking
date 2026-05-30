@@ -12,7 +12,7 @@
 import sqlite3
 import uvicorn
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
 
 import click
 
@@ -24,10 +24,11 @@ from pydantic import BaseModel
 # ── Domain ────────────────────────────────────────────────────────────
 
 class KcalEntry:
-    def __init__(self, kcal: int, description: str, entry_date: str) -> None:
+    def __init__(self, kcal: int, description: str, entry_date: str, created_at: str | None = None) -> None:
         self.kcal = kcal
         self.description = description
         self.entry_date = entry_date
+        self.created_at = created_at or datetime.now().strftime("%H:%M")
         self.id: int | None = None
 
 
@@ -59,7 +60,8 @@ class SqliteKcalRepository(KcalRepository):
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  kcal INTEGER NOT NULL,"
             "  description TEXT NOT NULL,"
-            "  entry_date TEXT NOT NULL"
+            "  entry_date TEXT NOT NULL,"
+            "  created_at TEXT NOT NULL DEFAULT '00:00'"
             ")"
         )
         self._conn.execute(
@@ -72,8 +74,8 @@ class SqliteKcalRepository(KcalRepository):
 
     def add_entry(self, entry: KcalEntry) -> KcalEntry:
         cur = self._conn.execute(
-            "INSERT INTO entries (kcal, description, entry_date) VALUES (?, ?, ?)",
-            (entry.kcal, entry.description, entry.entry_date),
+            "INSERT INTO entries (kcal, description, entry_date, created_at) VALUES (?, ?, ?, ?)",
+            (entry.kcal, entry.description, entry.entry_date, entry.created_at),
         )
         self._conn.commit()
         entry.id = cur.lastrowid
@@ -87,13 +89,13 @@ class SqliteKcalRepository(KcalRepository):
 
     def list_entries(self, entry_date: str) -> list[KcalEntry]:
         rows = self._conn.execute(
-            "SELECT id, kcal, description, entry_date FROM entries "
+            "SELECT id, kcal, description, entry_date, created_at FROM entries "
             "WHERE entry_date = ? ORDER BY id",
             (entry_date,),
         ).fetchall()
         entries: list[KcalEntry] = []
-        for row_id, kcal, description, d in rows:
-            e = KcalEntry(kcal, description, d)
+        for row_id, kcal, description, d, created_at in rows:
+            e = KcalEntry(kcal, description, d, created_at)
             e.id = row_id
             entries.append(e)
         return entries
@@ -130,6 +132,7 @@ class EntryResponse(BaseModel):
     id: int
     kcal: int
     description: str
+    time: str
 
 class DayResponse(BaseModel):
     date: str
@@ -153,7 +156,7 @@ async def get_day(day: str):
         date=day,
         limit=limit,
         total=total,
-        entries=[EntryResponse(id=e.id, kcal=e.kcal, description=e.description) for e in entries],
+        entries=[EntryResponse(id=e.id, kcal=e.kcal, description=e.description, time=e.created_at) for e in entries],
     )
 
 
@@ -161,7 +164,7 @@ async def get_day(day: str):
 async def add_entry(body: AddEntryRequest):
     entry = KcalEntry(body.kcal, body.description, body.date)
     repo.add_entry(entry)
-    return EntryResponse(id=entry.id, kcal=entry.kcal, description=entry.description)
+    return EntryResponse(id=entry.id, kcal=entry.kcal, description=entry.description, time=entry.created_at)
 
 
 @api.delete("/entries/{entry_id}", status_code=204)
@@ -305,6 +308,7 @@ HTML = """\
       id: number;
       kcal: number;
       description: string;
+      time: string;
     }
 
     interface DayData {
@@ -582,7 +586,8 @@ HTML = """\
       return (
         <div className="group flex items-center justify-between py-3 border-b border-muted last:border-b-0">
           <div className="flex items-baseline gap-3">
-            <span className="text-sm font-bold tabular-nums w-14 text-right">{entry.kcal}</span>
+            <span className="text-[11px] tabular-nums text-muted-foreground w-11 shrink-0">{entry.time}</span>
+            <span className="text-sm font-bold tabular-nums w-12 text-right shrink-0">{entry.kcal}</span>
             <span className="text-sm">{entry.description}</span>
           </div>
           <button
@@ -687,11 +692,11 @@ HTML = """\
 
       return (
         <QueryClientProvider client={queryClient}>
-          <div className="min-h-screen flex items-start justify-center p-4 pt-12 sm:pt-20">
-            <div className="w-full max-w-md">
+          <div className="min-h-[100dvh] flex flex-col sm:items-center sm:justify-start p-0 sm:p-4 sm:pt-20">
+            <div className="w-full max-w-md flex flex-col min-h-[100dvh] sm:min-h-0">
 
               {/* Header */}
-              <div className="border-2 border-foreground">
+              <div className="border-b-2 border-foreground sm:border-2">
                 <div className="flex items-center justify-between px-4 py-3 border-b-2 border-foreground">
                   <h1 className="text-xs font-bold tracking-[0.3em]">KCAL TRACKER</h1>
                   {!isToday && (
@@ -726,7 +731,7 @@ HTML = """\
               </div>
 
               {/* Body */}
-              <div className="border-2 border-t-0 border-foreground p-5">
+              <div className="flex-1 sm:flex-none border-b-2 border-foreground sm:border-2 sm:border-t-0 p-5">
                 <ErrorBoundary FallbackComponent={ErrorFallback}>
                   <Suspense fallback={<LoadingFallback />}>
                     <DayView date={date} />
@@ -735,7 +740,7 @@ HTML = """\
               </div>
 
               {/* Footer */}
-              <div className="text-center mt-3">
+              <div className="text-center py-3 sm:mt-3 sm:py-0">
                 <span className="text-[10px] tracking-wider text-muted-foreground">
                   ← → KEYS TO NAVIGATE
                 </span>
