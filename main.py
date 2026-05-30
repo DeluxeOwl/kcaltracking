@@ -50,6 +50,12 @@ class KcalRepository(ABC):
     @abstractmethod
     def set_limit(self, entry_date: str, limit_kcal: int) -> None: ...
 
+    @abstractmethod
+    def get_burn(self, entry_date: str) -> int | None: ...
+
+    @abstractmethod
+    def set_burn(self, entry_date: str, burn_kcal: int) -> None: ...
+
 
 class SqliteKcalRepository(KcalRepository):
     def __init__(self, db_path: str = "kcal.db") -> None:
@@ -68,6 +74,12 @@ class SqliteKcalRepository(KcalRepository):
             "CREATE TABLE IF NOT EXISTS daily_limits ("
             "  entry_date TEXT PRIMARY KEY,"
             "  limit_kcal INTEGER NOT NULL"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS daily_burns ("
+            "  entry_date TEXT PRIMARY KEY,"
+            "  burn_kcal INTEGER NOT NULL"
             ")"
         )
         self._conn.commit()
@@ -116,6 +128,22 @@ class SqliteKcalRepository(KcalRepository):
         )
         self._conn.commit()
 
+    def get_burn(self, entry_date: str) -> int | None:
+        row = self._conn.execute(
+            "SELECT burn_kcal FROM daily_burns "
+            "WHERE entry_date <= ? ORDER BY entry_date DESC LIMIT 1",
+            (entry_date,),
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_burn(self, entry_date: str, burn_kcal: int) -> None:
+        self._conn.execute(
+            "INSERT INTO daily_burns (entry_date, burn_kcal) VALUES (?, ?) "
+            "ON CONFLICT(entry_date) DO UPDATE SET burn_kcal = excluded.burn_kcal",
+            (entry_date, burn_kcal),
+        )
+        self._conn.commit()
+
 
 # ── Schemas ───────────────────────────────────────────────────────────
 
@@ -128,6 +156,10 @@ class SetLimitRequest(BaseModel):
     limit: int
     date: str
 
+class SetBurnRequest(BaseModel):
+    burn: int
+    date: str
+
 class EntryResponse(BaseModel):
     id: int
     kcal: int
@@ -137,6 +169,7 @@ class EntryResponse(BaseModel):
 class DayResponse(BaseModel):
     date: str
     limit: int | None
+    burn: int | None
     total: int
     entries: list[EntryResponse]
 
@@ -152,9 +185,11 @@ async def get_day(day: str):
     entries = repo.list_entries(day)
     limit = repo.get_limit(day)
     total = sum(e.kcal for e in entries)
+    burn = repo.get_burn(day)
     return DayResponse(
         date=day,
         limit=limit,
+        burn=burn,
         total=total,
         entries=[EntryResponse(id=e.id, kcal=e.kcal, description=e.description, time=e.created_at) for e in entries],
     )
@@ -179,6 +214,12 @@ async def delete_entry(entry_id: int):
 async def set_limit(body: SetLimitRequest):
     repo.set_limit(body.date, body.limit)
     return {"date": body.date, "limit": body.limit}
+
+
+@api.put("/burns", status_code=200)
+async def set_burn(body: SetBurnRequest):
+    repo.set_burn(body.date, body.burn)
+    return {"date": body.date, "burn": body.burn}
 
 
 # ── App ───────────────────────────────────────────────────────────────
@@ -217,6 +258,14 @@ HTML = """\
       --color-input: var(--input);
       --color-ring: var(--ring);
       --radius-sm: 0px;
+    }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    input[type="number"] {
+      -moz-appearance: textfield;
       --radius-md: 0px;
       --radius-lg: 0px;
       --radius-xl: 0px;
@@ -314,6 +363,7 @@ HTML = """\
     interface DayData {
       date: string;
       limit: number | null;
+      burn: number | null;
       total: number;
       entries: Entry[];
     }
@@ -335,6 +385,8 @@ HTML = """\
       deleteEntry: (id: number) => api.delete(`entries/${id}`),
       setLimit: (data: { limit: number; date: string }) =>
         api.put("limits", { json: data }).json<{ date: string; limit: number }>(),
+      setBurn: (data: { burn: number; date: string }) =>
+        api.put("burns", { json: data }).json<{ date: string; burn: number }>(),
     } as const;
 
     // ── Helpers ──────────────────────────────────────────────────
@@ -358,6 +410,34 @@ HTML = """\
       if (dateStr === yesterday) return "YESTERDAY";
       if (dateStr === tomorrow) return "TOMORROW";
       return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }).toUpperCase();
+    }
+
+    // ── Burn rate helpers ────────────────────────────────────────
+
+    const KCAL_PER_GRAM_FAT = 7.7;
+
+    function secondsSinceMidnight(): number {
+      const now = new Date();
+      return now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    }
+
+    function useLiveBurn(burnRate: number | null, consumed: number, isToday: boolean) {
+      const [now, setNow] = useState(Date.now());
+
+      useEffect(() => {
+        if (!isToday || burnRate === null) return;
+        const id = setInterval(() => setNow(Date.now()), 100);
+        return () => clearInterval(id);
+      }, [isToday, burnRate]);
+
+      if (burnRate === null) return null;
+
+      const elapsed = isToday ? secondsSinceMidnight() : 86400;
+      const burnedSoFar = (burnRate / 86400) * elapsed;
+      const deficit = burnedSoFar - consumed;
+      const grams = deficit / KCAL_PER_GRAM_FAT;
+
+      return { burnedSoFar, deficit, grams };
     }
 
     // ── Error handling ────────────────────────────────────────────
@@ -457,24 +537,22 @@ HTML = """\
       );
     }
 
-    function LimitSetter({ currentLimit, date }: { currentLimit: number | null; date: string }) {
+    function InlineSetter({ label, current, placeholder, onSave, isPending, error }: {
+      label: string;
+      current: number | null;
+      placeholder: string;
+      onSave: (val: number) => void;
+      isPending: boolean;
+      error: Error | null;
+    }) {
       const [editing, setEditing] = useState(false);
-      const { register, handleSubmit, reset } = useForm<{ limit: string }>({
-        defaultValues: { limit: currentLimit?.toString() ?? "" },
+      const { register, handleSubmit, reset } = useForm<{ value: string }>({
+        defaultValues: { value: current?.toString() ?? "" },
       });
-      const queryClient = useQueryClient();
 
       useEffect(() => {
-        reset({ limit: currentLimit?.toString() ?? "" });
-      }, [currentLimit, reset]);
-
-      const mutation = useMutation({
-        mutationFn: (limit: number) => kcalClient.setLimit({ limit, date }),
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: dayKeys.day(date) });
-          setEditing(false);
-        },
-      });
+        reset({ value: current?.toString() ?? "" });
+      }, [current, reset]);
 
       if (!editing) {
         return (
@@ -482,30 +560,30 @@ HTML = """\
             onClick={() => setEditing(true)}
             className="text-xs tracking-wider text-muted-foreground hover:text-foreground transition-colors border-b border-dashed border-muted-foreground hover:border-foreground"
           >
-            {currentLimit !== null ? `LIMIT: ${currentLimit} KCAL` : "SET DAILY LIMIT"}
+            {current !== null ? `${label}: ${current} KCAL` : `SET ${label}`}
           </button>
         );
       }
 
       return (
         <form
-          onSubmit={handleSubmit(({ limit }) => mutation.mutate(parseInt(limit)))}
+          onSubmit={handleSubmit(({ value }) => { onSave(parseInt(value)); setEditing(false); })}
           className="flex items-center gap-2"
         >
           <input
             type="number"
             autoFocus
-            {...register("limit", { required: true, min: 1 })}
+            {...register("value", { required: true, min: 1 })}
             className="w-20 text-xs border-2 border-foreground px-2 py-1 bg-transparent font-mono focus:outline-none"
-            placeholder="1700"
+            placeholder={placeholder}
           />
           <span className="text-xs tracking-wider">KCAL</span>
           <button
             type="submit"
-            disabled={mutation.isPending}
+            disabled={isPending}
             className="text-xs border-2 border-foreground px-2 py-1 hover:bg-foreground hover:text-background transition-colors disabled:opacity-50"
           >
-            {mutation.isPending ? "..." : "SET"}
+            {isPending ? "..." : "SET"}
           </button>
           <button
             type="button"
@@ -514,8 +592,119 @@ HTML = """\
           >
             ✕
           </button>
-          <AppErrorMessage error={mutation.error} />
+          <AppErrorMessage error={error} />
         </form>
+      );
+    }
+
+    function LimitSetter({ currentLimit, date }: { currentLimit: number | null; date: string }) {
+      const queryClient = useQueryClient();
+      const mutation = useMutation({
+        mutationFn: (limit: number) => kcalClient.setLimit({ limit, date }),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: dayKeys.day(date) }),
+      });
+      return (
+        <InlineSetter
+          label="LIMIT"
+          current={currentLimit}
+          placeholder="1700"
+          onSave={(v) => mutation.mutate(v)}
+          isPending={mutation.isPending}
+          error={mutation.error}
+        />
+      );
+    }
+
+    function BurnSetter({ currentBurn, date }: { currentBurn: number | null; date: string }) {
+      const queryClient = useQueryClient();
+      const mutation = useMutation({
+        mutationFn: (burn: number) => kcalClient.setBurn({ burn, date }),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: dayKeys.day(date) }),
+      });
+      return (
+        <InlineSetter
+          label="BURN"
+          current={currentBurn}
+          placeholder="2200"
+          onSave={(v) => mutation.mutate(v)}
+          isPending={mutation.isPending}
+          error={mutation.error}
+        />
+      );
+    }
+
+    function formatGrams(g: number): string {
+      const abs = Math.abs(g);
+      if (abs >= 1000) return (abs / 1000).toFixed(2) + "kg";
+      return abs.toFixed(abs < 10 ? 3 : 1) + "g";
+    }
+
+    function LiveBurnCounter({ burnRate, consumed, isToday }: { burnRate: number | null; consumed: number; isToday: boolean }) {
+      const burn = useLiveBurn(burnRate, consumed, isToday);
+      if (!burn) return null;
+
+      const losing = burn.grams > 0;
+      const gaining = burn.grams < 0;
+      const colorClass = losing ? "text-emerald-600" : gaining ? "text-red-500" : "";
+
+      // Forecast: "if you don't eat anymore" → full day deficit, repeated
+      const endOfDayDeficit = burnRate! - consumed;
+      const eodGrams = endOfDayDeficit / KCAL_PER_GRAM_FAT;
+      const weekGrams = eodGrams * 7;
+      const monthGrams = eodGrams * 30;
+      const eodLosing = eodGrams > 0;
+
+      return (
+        <div className="border-2 border-foreground p-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs tracking-wider text-muted-foreground">
+              {isToday ? "LIVE" : "FINAL"} WEIGHT CHANGE
+            </span>
+            <span className="text-xs tracking-wider text-muted-foreground tabular-nums">
+              {Math.round(burn.burnedSoFar)} BURNED
+            </span>
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            {/* Left: live counter */}
+            <div>
+              <div className={`text-3xl font-bold tabular-nums tracking-tight ${colorClass}`}>
+                {losing ? "↓" : gaining ? "↑" : ""} {Math.abs(burn.grams).toFixed(3)}g
+              </div>
+              <div className={`text-xs tracking-wider mt-1 ${colorClass || "text-muted-foreground"}`}>
+                {losing ? "LOSING" : gaining ? "GAINING" : "NEUTRAL"}
+              </div>
+              <div className="text-[10px] tabular-nums text-muted-foreground mt-1">
+                DEFICIT {burn.deficit >= 0 ? "+" : ""}{Math.round(burn.deficit)} KCAL
+              </div>
+            </div>
+
+            {/* Right: forecast */}
+            {isToday && (
+              <div className="text-right space-y-1.5 border-l border-muted pl-4">
+                <div className="text-[10px] tracking-wider text-muted-foreground mb-2">IF YOU STOP EATING</div>
+                <div className="flex items-baseline justify-end gap-2">
+                  <span className="text-[10px] tracking-wider text-muted-foreground">TODAY</span>
+                  <span className={`text-sm font-bold tabular-nums ${eodLosing ? "text-emerald-600" : "text-red-500"}`}>
+                    {eodLosing ? "↓" : "↑"}{formatGrams(eodGrams)}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-end gap-2">
+                  <span className="text-[10px] tracking-wider text-muted-foreground">7 DAYS</span>
+                  <span className={`text-sm font-bold tabular-nums ${eodLosing ? "text-emerald-600" : "text-red-500"}`}>
+                    {eodLosing ? "↓" : "↑"}{formatGrams(weekGrams)}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-end gap-2">
+                  <span className="text-[10px] tracking-wider text-muted-foreground">30 DAYS</span>
+                  <span className={`text-sm font-bold tabular-nums ${eodLosing ? "text-emerald-600" : "text-red-500"}`}>
+                    {eodLosing ? "↓" : "↑"}{formatGrams(monthGrams)}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       );
     }
 
@@ -593,7 +782,7 @@ HTML = """\
           <button
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending}
-            className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive transition-all disabled:opacity-50"
+            className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
           >
             {mutation.isPending ? "..." : "DEL"}
           </button>
@@ -613,6 +802,7 @@ HTML = """\
             const status = getStatus(data.total, data.limit);
             const counterColor = statusTextColor[status];
             const isOver = status === "over";
+            const isCurrentDay = date === todayStr();
             return (
               <>
                 <div className="flex items-center justify-between">
@@ -624,10 +814,15 @@ HTML = """\
                       {isOver ? "⚠️ OVER LIMIT" : "KCAL"}
                     </div>
                   </div>
-                  <LimitSetter currentLimit={data.limit} date={date} />
+                  <div className="flex flex-col items-end gap-1">
+                    <LimitSetter currentLimit={data.limit} date={date} />
+                    <BurnSetter currentBurn={data.burn} date={date} />
+                  </div>
                 </div>
 
                 <ProgressBar total={data.total} limit={data.limit} />
+
+                <LiveBurnCounter burnRate={data.burn} consumed={data.total} isToday={isCurrentDay} />
               </>
             );
           })()}
