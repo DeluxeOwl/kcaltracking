@@ -177,7 +177,7 @@ class DayResponse(BaseModel):
 # ── API ───────────────────────────────────────────────────────────────
 
 api = APIRouter(prefix="/api")
-repo = SqliteKcalRepository()
+repo: SqliteKcalRepository
 
 
 @api.get("/days/{day}", response_model=DayResponse)
@@ -961,7 +961,10 @@ async def spa(path: str):
 @click.command()
 @click.option("--host", default="0.0.0.0", show_default=True, help="Bind host")
 @click.option("--port", default=8765, type=int, help="Bind port")
-def main(host: str, port: int | None):
+@click.option("--db", default="kcal.db", show_default=True, help="Path to SQLite database")
+def main(host: str, port: int | None, db: str):
+    global repo
+    repo = SqliteKcalRepository(db)
     uvicorn.run(app, host=host, port=port)
 
 
