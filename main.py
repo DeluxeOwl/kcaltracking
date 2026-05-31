@@ -151,6 +151,7 @@ class AddEntryRequest(BaseModel):
     kcal: int
     description: str
     date: str
+    time: str | None = None
 
 class SetLimitRequest(BaseModel):
     limit: int
@@ -197,7 +198,7 @@ async def get_day(day: str):
 
 @api.post("/entries", response_model=EntryResponse, status_code=201)
 async def add_entry(body: AddEntryRequest):
-    entry = KcalEntry(body.kcal, body.description, body.date)
+    entry = KcalEntry(body.kcal, body.description, body.date, created_at=body.time)
     repo.add_entry(entry)
     return EntryResponse(id=entry.id, kcal=entry.kcal, description=entry.description, time=entry.created_at)
 
@@ -380,7 +381,7 @@ HTML = """\
 
     const kcalClient = {
       getDay: (date: string) => api.get(`days/${date}`).json<DayData>(),
-      addEntry: (data: { kcal: number; description: string; date: string }) =>
+      addEntry: (data: { kcal: number; description: string; date: string; time: string }) =>
         api.post("entries", { json: data }).json<Entry>(),
       deleteEntry: (id: number) => api.delete(`entries/${id}`),
       setLimit: (data: { limit: number; date: string }) =>
@@ -729,7 +730,9 @@ HTML = """\
       });
 
       const onSubmit = ({ kcal, description }: AddEntryFields) => {
-        mutation.mutate({ kcal: parseInt(kcal), description: description.trim(), date });
+        const now = new Date();
+        const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+        mutation.mutate({ kcal: parseInt(kcal), description: description.trim(), date, time });
       };
 
       return (
