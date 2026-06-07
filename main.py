@@ -56,6 +56,12 @@ class KcalRepository(ABC):
     @abstractmethod
     def set_burn(self, entry_date: str, burn_kcal: int) -> None: ...
 
+    @abstractmethod
+    def is_skipped(self, entry_date: str) -> bool: ...
+
+    @abstractmethod
+    def set_skipped(self, entry_date: str, skipped: bool) -> None: ...
+
 
 class SqliteKcalRepository(KcalRepository):
     def __init__(self, db_path: str = "kcal.db") -> None:
@@ -80,6 +86,11 @@ class SqliteKcalRepository(KcalRepository):
             "CREATE TABLE IF NOT EXISTS daily_burns ("
             "  entry_date TEXT PRIMARY KEY,"
             "  burn_kcal INTEGER NOT NULL"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS skipped_days ("
+            "  entry_date TEXT PRIMARY KEY"
             ")"
         )
         self._conn.commit()
@@ -144,6 +155,26 @@ class SqliteKcalRepository(KcalRepository):
         )
         self._conn.commit()
 
+    def is_skipped(self, entry_date: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM skipped_days WHERE entry_date = ?",
+            (entry_date,),
+        ).fetchone()
+        return row is not None
+
+    def set_skipped(self, entry_date: str, skipped: bool) -> None:
+        if skipped:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO skipped_days (entry_date) VALUES (?)",
+                (entry_date,),
+            )
+        else:
+            self._conn.execute(
+                "DELETE FROM skipped_days WHERE entry_date = ?",
+                (entry_date,),
+            )
+        self._conn.commit()
+
 
 # ── Schemas ───────────────────────────────────────────────────────────
 
@@ -161,6 +192,10 @@ class SetBurnRequest(BaseModel):
     burn: int
     date: str
 
+class SetSkippedRequest(BaseModel):
+    skipped: bool
+    date: str
+
 class EntryResponse(BaseModel):
     id: int
     kcal: int
@@ -172,6 +207,7 @@ class DayResponse(BaseModel):
     limit: int | None
     burn: int | None
     total: int
+    skipped: bool
     entries: list[EntryResponse]
 
 
@@ -187,11 +223,13 @@ async def get_day(day: str):
     limit = repo.get_limit(day)
     total = sum(e.kcal for e in entries)
     burn = repo.get_burn(day)
+    skipped = repo.is_skipped(day)
     return DayResponse(
         date=day,
         limit=limit,
         burn=burn,
         total=total,
+        skipped=skipped,
         entries=[EntryResponse(id=e.id, kcal=e.kcal, description=e.description, time=e.created_at) for e in entries],
     )
 
@@ -221,6 +259,12 @@ async def set_limit(body: SetLimitRequest):
 async def set_burn(body: SetBurnRequest):
     repo.set_burn(body.date, body.burn)
     return {"date": body.date, "burn": body.burn}
+
+
+@api.put("/skip", status_code=200)
+async def set_skipped(body: SetSkippedRequest):
+    repo.set_skipped(body.date, body.skipped)
+    return {"date": body.date, "skipped": body.skipped}
 
 
 # ── App ───────────────────────────────────────────────────────────────
@@ -366,6 +410,7 @@ HTML = """\
       limit: number | null;
       burn: number | null;
       total: number;
+      skipped: boolean;
       entries: Entry[];
     }
 
@@ -388,6 +433,8 @@ HTML = """\
         api.put("limits", { json: data }).json<{ date: string; limit: number }>(),
       setBurn: (data: { burn: number; date: string }) =>
         api.put("burns", { json: data }).json<{ date: string; burn: number }>(),
+      setSkipped: (data: { skipped: boolean; date: string }) =>
+        api.put("skip", { json: data }).json<{ date: string; skipped: boolean }>(),
     } as const;
 
     // ── Helpers ──────────────────────────────────────────────────
@@ -793,11 +840,60 @@ HTML = """\
       );
     }
 
+    function SkipDayToggle({ skipped, date }: { skipped: boolean; date: string }) {
+      const queryClient = useQueryClient();
+      const mutation = useMutation({
+        mutationFn: (newSkipped: boolean) => kcalClient.setSkipped({ skipped: newSkipped, date }),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: dayKeys.day(date) }),
+      });
+
+      return (
+        <button
+          onClick={() => mutation.mutate(!skipped)}
+          disabled={mutation.isPending}
+          className={`text-xs tracking-wider border-2 px-3 py-1.5 transition-colors disabled:opacity-50 ${
+            skipped
+              ? "border-yellow-500 bg-yellow-500 text-white hover:bg-transparent hover:text-yellow-500"
+              : "border-foreground text-muted-foreground hover:bg-foreground hover:text-background"
+          }`}
+        >
+          {mutation.isPending ? "..." : skipped ? "🍕 CHEAT DAY" : "SKIP DAY"}
+        </button>
+      );
+    }
+
     function DayView({ date }: { date: string }) {
       const { data } = useSuspenseQuery({
         queryKey: dayKeys.day(date),
         queryFn: () => kcalClient.getDay(date),
       });
+
+      if (data.skipped) {
+        return (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-4xl font-bold tracking-tighter text-yellow-500">
+                  🍕 CHEAT DAY
+                </div>
+                <div className="text-xs tracking-wider mt-0.5 text-yellow-500">
+                  NOT COUNTING
+                </div>
+              </div>
+              <SkipDayToggle skipped={data.skipped} date={date} />
+            </div>
+
+            {data.entries.length > 0 && (
+              <div className="border-t border-muted pt-1 opacity-50">
+                <div className="text-[10px] tracking-wider text-muted-foreground mb-2">ENTRIES (NOT COUNTED)</div>
+                {data.entries.map((entry) => (
+                  <EntryItem key={entry.id} entry={entry} date={date} />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      }
 
       return (
         <div className="space-y-6">
@@ -820,6 +916,7 @@ HTML = """\
                   <div className="flex flex-col items-end gap-1">
                     <LimitSetter currentLimit={data.limit} date={date} />
                     <BurnSetter currentBurn={data.burn} date={date} />
+                    <SkipDayToggle skipped={data.skipped} date={date} />
                   </div>
                 </div>
 
