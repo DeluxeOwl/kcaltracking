@@ -12,7 +12,7 @@
 import sqlite3
 import uvicorn
 from abc import ABC, abstractmethod
-from datetime import date, datetime
+from datetime import datetime
 
 import click
 
@@ -367,7 +367,13 @@ HTML = """\
     Babel.registerPreset("tsx-auto", {
       presets: [
         [Babel.availablePresets["react"], { runtime: "automatic" }],
-        [Babel.availablePresets["typescript"], { isTSX: true, allExtensions: true }],
+        [
+          Babel.availablePresets["typescript"], 
+          { 
+            // Replace isTSX and allExtensions with this:
+            ignoreExtensions: true 
+          }
+        ],
       ],
     });
   </script>
