@@ -62,6 +62,9 @@ class KcalRepository(ABC):
     @abstractmethod
     def set_skipped(self, entry_date: str, skipped: bool) -> None: ...
 
+    @abstractmethod
+    def cumulative_weight_change(self) -> dict: ...
+
 
 class SqliteKcalRepository(KcalRepository):
     def __init__(self, db_path: str = "kcal.db") -> None:
@@ -175,6 +178,68 @@ class SqliteKcalRepository(KcalRepository):
             )
         self._conn.commit()
 
+    def cumulative_weight_change(self) -> dict:
+        """Compute cumulative weight change across all completed (non-skipped) days."""
+        KCAL_PER_GRAM_FAT = 7.7
+
+        # Get all dates that have entries
+        rows = self._conn.execute(
+            "SELECT entry_date, SUM(kcal) FROM entries GROUP BY entry_date ORDER BY entry_date"
+        ).fetchall()
+
+        # Get all burn rates (sorted by date)
+        burn_rows = self._conn.execute(
+            "SELECT entry_date, burn_kcal FROM daily_burns ORDER BY entry_date"
+        ).fetchall()
+
+        # Get skipped days
+        skipped_rows = self._conn.execute(
+            "SELECT entry_date FROM skipped_days"
+        ).fetchall()
+        skipped_set = {r[0] for r in skipped_rows}
+
+        def get_burn_for_date(date: str) -> int | None:
+            """Replicate the <= lookup logic for burn rate."""
+            result = None
+            for bd, bk in burn_rows:
+                if bd <= date:
+                    result = bk
+                else:
+                    break
+            return result
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        total_grams = 0.0
+        day_details = []
+
+        for entry_date, consumed in rows:
+            if entry_date in skipped_set:
+                continue
+            if entry_date >= today:
+                # Skip today and future days (not yet complete)
+                continue
+
+            burn = get_burn_for_date(entry_date)
+            if burn is None:
+                continue
+
+            deficit = burn - consumed
+            grams = deficit / KCAL_PER_GRAM_FAT
+            total_grams += grams
+            day_details.append({
+                "date": entry_date,
+                "consumed": consumed,
+                "burn": burn,
+                "deficit": deficit,
+                "grams": round(grams, 3),
+            })
+
+        return {
+            "total_grams": round(total_grams, 3),
+            "days_counted": len(day_details),
+            "days": day_details,
+        }
+
 
 # ── Schemas ───────────────────────────────────────────────────────────
 
@@ -265,6 +330,11 @@ async def set_burn(body: SetBurnRequest):
 async def set_skipped(body: SetSkippedRequest):
     repo.set_skipped(body.date, body.skipped)
     return {"date": body.date, "skipped": body.skipped}
+
+
+@api.get("/cumulative")
+async def get_cumulative():
+    return repo.cumulative_weight_change()
 
 
 # ── App ───────────────────────────────────────────────────────────────
@@ -441,6 +511,8 @@ HTML = """\
         api.put("burns", { json: data }).json<{ date: string; burn: number }>(),
       setSkipped: (data: { skipped: boolean; date: string }) =>
         api.put("skip", { json: data }).json<{ date: string; skipped: boolean }>(),
+      getCumulative: () =>
+        api.get("cumulative").json<{ total_grams: number; days_counted: number }>(),
     } as const;
 
     // ── Helpers ──────────────────────────────────────────────────
@@ -846,6 +918,40 @@ HTML = """\
       );
     }
 
+    function CumulativeWeightChange() {
+      const { data } = useSuspenseQuery({
+        queryKey: ["cumulative"],
+        queryFn: () => kcalClient.getCumulative(),
+        refetchInterval: 60000,
+      });
+
+      if (data.days_counted === 0) return null;
+
+      const losing = data.total_grams > 0;
+      const gaining = data.total_grams < 0;
+      const colorClass = losing ? "text-emerald-600" : gaining ? "text-red-500" : "text-muted-foreground";
+
+      const absGrams = Math.abs(data.total_grams);
+      let display: string;
+      if (absGrams >= 1000) {
+        display = (absGrams / 1000).toFixed(2) + "kg";
+      } else {
+        display = absGrams.toFixed(1) + "g";
+      }
+
+      return (
+        <div className="border-2 border-dashed border-foreground px-4 py-3 flex items-center justify-between">
+          <div>
+            <div className="text-[10px] tracking-wider text-muted-foreground">TOTAL BURNED SINCE START</div>
+            <div className="text-[10px] tracking-wider text-muted-foreground">{data.days_counted} DAYS COUNTED</div>
+          </div>
+          <div className={`text-2xl font-bold tabular-nums tracking-tight ${colorClass}`}>
+            {losing ? "↓" : gaining ? "↑" : ""} {display}
+          </div>
+        </div>
+      );
+    }
+
     function SkipDayToggle({ skipped, date }: { skipped: boolean; date: string }) {
       const queryClient = useQueryClient();
       const mutation = useMutation({
@@ -1036,6 +1142,15 @@ HTML = """\
                 <ErrorBoundary FallbackComponent={ErrorFallback}>
                   <Suspense fallback={<LoadingFallback />}>
                     <DayView date={date} />
+                  </Suspense>
+                </ErrorBoundary>
+              </div>
+
+              {/* Cumulative */}
+              <div className="sm:border-2 sm:border-t-0 border-b-2 border-foreground sm:border-b-2">
+                <ErrorBoundary FallbackComponent={ErrorFallback}>
+                  <Suspense fallback={null}>
+                    <CumulativeWeightChange />
                   </Suspense>
                 </ErrorBoundary>
               </div>
