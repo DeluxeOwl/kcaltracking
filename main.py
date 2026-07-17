@@ -65,6 +65,9 @@ class KcalRepository(ABC):
     @abstractmethod
     def cumulative_weight_change(self) -> dict: ...
 
+    @abstractmethod
+    def average_intake(self, days: int) -> dict: ...
+
 
 class SqliteKcalRepository(KcalRepository):
     def __init__(self, db_path: str = "kcal.db") -> None:
@@ -178,9 +181,58 @@ class SqliteKcalRepository(KcalRepository):
             )
         self._conn.commit()
 
+    def average_intake(self, days: int) -> dict:
+        """Compute average daily kcal intake over the last N days (excluding today).
+
+        Skipped (cheat) days count as 4000 kcal consumed.
+        """
+        from datetime import timedelta
+        SKIPPED_DAY_KCAL = 4000
+        today = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        skipped_rows = self._conn.execute(
+            "SELECT entry_date FROM skipped_days "
+            "WHERE entry_date >= ? AND entry_date < ?",
+            (start_date, today),
+        ).fetchall()
+        skipped_set = {r[0] for r in skipped_rows}
+
+        rows = self._conn.execute(
+            "SELECT entry_date, SUM(kcal) FROM entries "
+            "WHERE entry_date >= ? AND entry_date < ? "
+            "GROUP BY entry_date ORDER BY entry_date",
+            (start_date, today),
+        ).fetchall()
+
+        # Merge entry dates and skipped dates so skipped days with no entries are included
+        entry_totals = {entry_date: total for entry_date, total in rows}
+        all_dates = sorted(set(entry_totals.keys()) | skipped_set)
+
+        day_totals = []
+        for entry_date in all_dates:
+            if entry_date in skipped_set:
+                day_totals.append({"date": entry_date, "total": SKIPPED_DAY_KCAL, "skipped": True})
+            else:
+                day_totals.append({"date": entry_date, "total": entry_totals[entry_date], "skipped": False})
+
+        counted = len(day_totals)
+        avg = round(sum(d["total"] for d in day_totals) / counted, 1) if counted > 0 else 0
+
+        return {
+            "days_requested": days,
+            "days_counted": counted,
+            "average_kcal": avg,
+            "days": day_totals,
+        }
+
     def cumulative_weight_change(self) -> dict:
-        """Compute cumulative weight change across all completed (non-skipped) days."""
+        """Compute cumulative weight change across all completed days.
+
+        Skipped (cheat) days count as 4000 kcal consumed.
+        """
         KCAL_PER_GRAM_FAT = 7.7
+        SKIPPED_DAY_KCAL = 4000
 
         # Get all dates that have entries
         rows = self._conn.execute(
@@ -209,15 +261,23 @@ class SqliteKcalRepository(KcalRepository):
             return result
 
         today = datetime.now().strftime("%Y-%m-%d")
+
+        # Merge entry dates and skipped dates so skipped days with no entries are included
+        entry_totals = {entry_date: consumed for entry_date, consumed in rows}
+        all_dates = sorted(set(entry_totals.keys()) | skipped_set)
+
         total_grams = 0.0
         day_details = []
 
-        for entry_date, consumed in rows:
-            if entry_date in skipped_set:
-                continue
+        for entry_date in all_dates:
             if entry_date >= today:
                 # Skip today and future days (not yet complete)
                 continue
+
+            if entry_date in skipped_set:
+                consumed = SKIPPED_DAY_KCAL
+            else:
+                consumed = entry_totals.get(entry_date, 0)
 
             burn = get_burn_for_date(entry_date)
             if burn is None:
@@ -232,6 +292,7 @@ class SqliteKcalRepository(KcalRepository):
                 "burn": burn,
                 "deficit": deficit,
                 "grams": round(grams, 3),
+                "skipped": entry_date in skipped_set,
             })
 
         return {
@@ -335,6 +396,13 @@ async def set_skipped(body: SetSkippedRequest):
 @api.get("/cumulative")
 async def get_cumulative():
     return repo.cumulative_weight_change()
+
+
+@api.get("/average/{days}")
+async def get_average(days: int):
+    if days < 1:
+        raise HTTPException(status_code=400, detail="Days must be >= 1")
+    return repo.average_intake(days)
 
 
 # ── App ───────────────────────────────────────────────────────────────
@@ -513,6 +581,8 @@ HTML = """\
         api.put("skip", { json: data }).json<{ date: string; skipped: boolean }>(),
       getCumulative: () =>
         api.get("cumulative").json<{ total_grams: number; days_counted: number }>(),
+      getAverage: (days: number) =>
+        api.get(`average/${days}`).json<{ days_requested: number; days_counted: number; average_kcal: number }>(),
     } as const;
 
     // ── Helpers ──────────────────────────────────────────────────
@@ -952,6 +1022,76 @@ HTML = """\
       );
     }
 
+    function AverageIntake() {
+      const presets = [7, 14, 30];
+      const [selectedDays, setSelectedDays] = useState(7);
+      const [customInput, setCustomInput] = useState("");
+      const [isCustom, setIsCustom] = useState(false);
+      const queryClient = useQueryClient();
+
+      const { data } = useSuspenseQuery({
+        queryKey: ["average", selectedDays],
+        queryFn: () => kcalClient.getAverage(selectedDays),
+        refetchInterval: 60000,
+      });
+
+      if (data.days_counted === 0 && !isCustom) return null;
+
+      return (
+        <div className="px-4 py-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] tracking-wider text-muted-foreground">AVG DAILY INTAKE</div>
+            <div className="text-2xl font-bold tabular-nums tracking-tight">
+              {data.days_counted > 0 ? `${Math.round(data.average_kcal)} KCAL` : "—"}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {presets.map((d) => (
+              <button
+                key={d}
+                onClick={() => { setSelectedDays(d); setIsCustom(false); setCustomInput(""); }}
+                className={`text-[10px] tracking-wider px-2.5 py-1 border-2 transition-colors ${
+                  selectedDays === d && !isCustom
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-foreground text-foreground hover:bg-foreground hover:text-background"
+                }`}
+              >
+                {d}D
+              </button>
+            ))}
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const val = parseInt(customInput);
+                if (val > 0) { setSelectedDays(val); setIsCustom(true); }
+              }}
+              className="flex items-center gap-1 ml-auto"
+            >
+              <input
+                type="number"
+                value={customInput}
+                onChange={(e) => setCustomInput(e.target.value)}
+                placeholder="N"
+                className="w-12 text-[10px] border-2 border-foreground px-1.5 py-1 bg-transparent font-mono focus:outline-none placeholder:text-muted-foreground text-center"
+              />
+              <button
+                type="submit"
+                className="text-[10px] tracking-wider border-2 border-foreground px-2 py-1 hover:bg-foreground hover:text-background transition-colors"
+              >
+                GO
+              </button>
+            </form>
+          </div>
+
+          <div className="text-[10px] tracking-wider text-muted-foreground">
+            {data.days_counted} OF {data.days_requested} DAYS WITH DATA
+          </div>
+        </div>
+      );
+    }
+
     function SkipDayToggle({ skipped, date }: { skipped: boolean; date: string }) {
       const queryClient = useQueryClient();
       const mutation = useMutation({
@@ -1142,6 +1282,15 @@ HTML = """\
                 <ErrorBoundary FallbackComponent={ErrorFallback}>
                   <Suspense fallback={<LoadingFallback />}>
                     <DayView date={date} />
+                  </Suspense>
+                </ErrorBoundary>
+              </div>
+
+              {/* Average Intake */}
+              <div className="sm:border-2 sm:border-t-0 border-b-2 border-foreground sm:border-b-2">
+                <ErrorBoundary FallbackComponent={ErrorFallback}>
+                  <Suspense fallback={null}>
+                    <AverageIntake />
                   </Suspense>
                 </ErrorBoundary>
               </div>
