@@ -2,23 +2,71 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "click",
-#     "fastapi",
-#     "pydantic",
-#     "uvicorn",
+#     "click==8.4.2",
+#     "fastapi==0.141.1",
+#     "pydantic==2.13.4",
+#     "uvicorn==0.52.1",
 # ]
 # ///
 
+import re
 import sqlite3
 import uvicorn
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Annotated
 
 import click
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel, Field
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+# Upper bound for the rolling-average window (~10 years). Without it, a huge
+# value overflows date arithmetic and surfaces as a 500.
+MAX_AVERAGE_DAYS = 3650
+
+
+def _validate_date_str(value: str) -> str:
+    if not _DATE_RE.match(value):
+        raise ValueError("date must be in YYYY-MM-DD format")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError("date must be a real calendar date")
+    return value
+
+
+def _validate_time_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not _TIME_RE.match(value):
+        raise ValueError("time must be in HH:MM 24-hour format")
+    return value
+
+
+def _validate_description(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("description must not be blank")
+    return stripped
+
+
+def require_valid_date(value: str) -> str:
+    """Validate a date taken from a URL path, raising HTTP 400 on failure."""
+    try:
+        return _validate_date_str(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+DateStr = Annotated[str, AfterValidator(_validate_date_str)]
+TimeStr = Annotated[str | None, AfterValidator(_validate_time_str)]
+DescriptionStr = Annotated[str, Field(max_length=500), AfterValidator(_validate_description)]
 
 
 # ── Domain ────────────────────────────────────────────────────────────
@@ -305,22 +353,22 @@ class SqliteKcalRepository(KcalRepository):
 # ── Schemas ───────────────────────────────────────────────────────────
 
 class AddEntryRequest(BaseModel):
-    kcal: int
-    description: str
-    date: str
-    time: str | None = None
+    kcal: int = Field(gt=0, le=100_000)
+    description: DescriptionStr
+    date: DateStr
+    time: TimeStr = None
 
 class SetLimitRequest(BaseModel):
-    limit: int
-    date: str
+    limit: int = Field(gt=0, le=100_000)
+    date: DateStr
 
 class SetBurnRequest(BaseModel):
-    burn: int
-    date: str
+    burn: int = Field(gt=0, le=100_000)
+    date: DateStr
 
 class SetSkippedRequest(BaseModel):
     skipped: bool
-    date: str
+    date: DateStr
 
 class EntryResponse(BaseModel):
     id: int
@@ -345,6 +393,7 @@ repo: SqliteKcalRepository
 
 @api.get("/days/{day}", response_model=DayResponse)
 async def get_day(day: str):
+    day = require_valid_date(day)
     entries = repo.list_entries(day)
     limit = repo.get_limit(day)
     total = sum(e.kcal for e in entries)
@@ -402,6 +451,8 @@ async def get_cumulative():
 async def get_average(days: int):
     if days < 1:
         raise HTTPException(status_code=400, detail="Days must be >= 1")
+    if days > MAX_AVERAGE_DAYS:
+        raise HTTPException(status_code=400, detail=f"Days must be <= {MAX_AVERAGE_DAYS}")
     return repo.average_intake(days)
 
 
@@ -418,7 +469,7 @@ HTML = """\
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KCAL</title>
 
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"></script>
 
   <style type="text/tailwindcss">
     @theme inline {
@@ -486,30 +537,31 @@ HTML = """\
   <script type="importmap">
   {
     "imports": {
-      "react": "https://esm.sh/react@19",
-      "react/jsx-runtime": "https://esm.sh/react@19/jsx-runtime",
-      "react/jsx-dev-runtime": "https://esm.sh/react@19/jsx-dev-runtime",
-      "react-dom": "https://esm.sh/react-dom@19",
-      "react-dom/client": "https://esm.sh/react-dom@19/client",
-      "shadcn": "https://esm.sh/shadcn-ui-bundled/standalone",
-      "@tanstack/react-query": "https://esm.sh/@tanstack/react-query@5?deps=react@19",
-      "react-error-boundary": "https://esm.sh/react-error-boundary?deps=react@19",
-      "ky": "https://esm.sh/ky",
-      "react-hook-form": "https://esm.sh/react-hook-form?deps=react@19"
+      "react": "https://esm.sh/react@19.2.8",
+      "react/jsx-runtime": "https://esm.sh/react@19.2.8/jsx-runtime",
+      "react/jsx-dev-runtime": "https://esm.sh/react@19.2.8/jsx-dev-runtime",
+      "react-dom": "https://esm.sh/react-dom@19.2.8?deps=react@19.2.8",
+      "react-dom/client": "https://esm.sh/react-dom@19.2.8/client?deps=react@19.2.8",
+      "shadcn": "https://esm.sh/shadcn-ui-bundled@0.1.0/standalone?deps=react@19.2.8,react-dom@19.2.8",
+      "@tanstack/react-query": "https://esm.sh/@tanstack/react-query@5.101.4?deps=react@19.2.8",
+      "react-error-boundary": "https://esm.sh/react-error-boundary@6.1.2?deps=react@19.2.8",
+      "ky": "https://esm.sh/ky@2.0.2",
+      "react-hook-form": "https://esm.sh/react-hook-form@7.84.0?deps=react@19.2.8"
     }
   }
   </script>
 
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.8/babel.min.js"></script>
   <script>
     Babel.registerPreset("tsx-auto", {
       presets: [
         [Babel.availablePresets["react"], { runtime: "automatic" }],
         [
-          Babel.availablePresets["typescript"], 
-          { 
-            // Replace isTSX and allExtensions with this:
-            ignoreExtensions: true 
+          Babel.availablePresets["typescript"],
+          {
+            // Required so the parser runs in TSX mode (JSX + TS).
+            isTSX: true,
+            allExtensions: true
           }
         ],
       ],
@@ -564,6 +616,22 @@ HTML = """\
       day: (date: string) => ["day", date] as const,
     } as const;
 
+    const statsKeys = {
+      average: ["average"] as const,
+      cumulative: ["cumulative"] as const,
+    } as const;
+
+    // Anything that changes stored kcal also changes the average and cumulative
+    // cards, so they must be invalidated together.
+    function useInvalidateDayAndStats(date: string) {
+      const queryClient = useQueryClient();
+      return useCallback(() => {
+        queryClient.invalidateQueries({ queryKey: dayKeys.day(date) });
+        queryClient.invalidateQueries({ queryKey: statsKeys.average });
+        queryClient.invalidateQueries({ queryKey: statsKeys.cumulative });
+      }, [queryClient, date]);
+    }
+
     // ── API client ──────────────────────────────────────────────
 
     const api = ky.create({ prefix: "/api" });
@@ -587,14 +655,22 @@ HTML = """\
 
     // ── Helpers ──────────────────────────────────────────────────
 
+    // toISOString() is UTC, which picks the wrong day either side of midnight.
+    // Every date in this app is a *local* calendar date.
+    function toDateStr(d: Date): string {
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${d.getFullYear()}-${month}-${day}`;
+    }
+
     function todayStr(): string {
-      return new Date().toISOString().split("T")[0];
+      return toDateStr(new Date());
     }
 
     function shiftDate(dateStr: string, days: number): string {
       const d = new Date(dateStr + "T12:00:00");
       d.setDate(d.getDate() + days);
-      return d.toISOString().split("T")[0];
+      return toDateStr(d);
     }
 
     function formatDate(dateStr: string): string {
@@ -611,6 +687,10 @@ HTML = """\
     // ── Burn rate helpers ────────────────────────────────────────
 
     const KCAL_PER_GRAM_FAT = 7.7;
+    // Must match the backend: a cheat day is scored as this many kcal.
+    const SKIPPED_DAY_KCAL = 4000;
+    // Must match the backend bound on /api/average/{days}.
+    const MAX_AVERAGE_DAYS = 3650;
 
     function secondsSinceMidnight(): number {
       const now = new Date();
@@ -622,7 +702,7 @@ HTML = """\
 
       useEffect(() => {
         if (!isToday || burnRate === null) return;
-        const id = setInterval(() => setNow(Date.now()), 100);
+        const id = setInterval(() => setNow(Date.now()), 1000);
         return () => clearInterval(id);
       }, [isToday, burnRate]);
 
@@ -638,6 +718,23 @@ HTML = """\
 
     // ── Error handling ────────────────────────────────────────────
 
+    // FastAPI returns `detail` as a string for HTTPException but as an array of
+    // objects for 422 validation errors. Rendering the array directly crashes React.
+    function formatDetail(detail: any, fallback: string): string {
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) {
+        const parts = detail
+          .map((d) => {
+            const field = Array.isArray(d?.loc) ? d.loc[d.loc.length - 1] : null;
+            const msg = String(d?.msg ?? "").replace(/^Value error, /, "");
+            return field ? `${field}: ${msg}` : msg;
+          })
+          .filter(Boolean);
+        if (parts.length > 0) return parts.join("; ");
+      }
+      return fallback;
+    }
+
     function useErrorMessage(error: Error | null): string | null {
       const [message, setMessage] = useState<string | null>(null);
 
@@ -646,7 +743,7 @@ HTML = """\
         if (error instanceof HTTPError) {
           error.response
             .json()
-            .then((body: any) => setMessage(body?.detail ?? error.message))
+            .then((body: any) => setMessage(formatDetail(body?.detail, error.message)))
             .catch(() => setMessage(error.message));
         } else {
           setMessage(error.message);
@@ -737,7 +834,7 @@ HTML = """\
       label: string;
       current: number | null;
       placeholder: string;
-      onSave: (val: number) => void;
+      onSave: (val: number) => Promise<unknown>;
       isPending: boolean;
       error: Error | null;
     }) {
@@ -745,6 +842,18 @@ HTML = """\
       const { register, handleSubmit, reset } = useForm<{ value: string }>({
         defaultValues: { value: current?.toString() ?? "" },
       });
+
+      // Stay open when the save fails, otherwise the error is never seen.
+      const onSubmit = async ({ value }: { value: string }) => {
+        const parsed = parseInt(value);
+        if (!Number.isFinite(parsed) || parsed <= 0) return;
+        try {
+          await onSave(parsed);
+          setEditing(false);
+        } catch {
+          /* error is rendered by AppErrorMessage below */
+        }
+      };
 
       useEffect(() => {
         reset({ value: current?.toString() ?? "" });
@@ -763,7 +872,7 @@ HTML = """\
 
       return (
         <form
-          onSubmit={handleSubmit(({ value }) => { onSave(parseInt(value)); setEditing(false); })}
+          onSubmit={handleSubmit(onSubmit)}
           className="flex items-center gap-2"
         >
           <input
@@ -804,7 +913,7 @@ HTML = """\
           label="LIMIT"
           current={currentLimit}
           placeholder="1700"
-          onSave={(v) => mutation.mutate(v)}
+          onSave={(v) => mutation.mutateAsync(v)}
           isPending={mutation.isPending}
           error={mutation.error}
         />
@@ -812,17 +921,18 @@ HTML = """\
     }
 
     function BurnSetter({ currentBurn, date }: { currentBurn: number | null; date: string }) {
-      const queryClient = useQueryClient();
+      // Burn rate feeds the cumulative weight calculation, not just this day.
+      const invalidate = useInvalidateDayAndStats(date);
       const mutation = useMutation({
         mutationFn: (burn: number) => kcalClient.setBurn({ burn, date }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: dayKeys.day(date) }),
+        onSuccess: invalidate,
       });
       return (
         <InlineSetter
           label="BURN"
           current={currentBurn}
           placeholder="2200"
-          onSave={(v) => mutation.mutate(v)}
+          onSave={(v) => mutation.mutateAsync(v)}
           isPending={mutation.isPending}
           error={mutation.error}
         />
@@ -835,7 +945,34 @@ HTML = """\
       return abs.toFixed(abs < 10 ? 3 : 1) + "g";
     }
 
-    function LiveBurnCounter({ burnRate, consumed, isToday }: { burnRate: number | null; consumed: number; isToday: boolean }) {
+    // Below this the forecast rounds to 0.000g, so it is neither a loss nor a gain.
+    const GRAM_EPSILON = 0.0005;
+
+    function gramsTrend(g: number): "losing" | "gaining" | "neutral" {
+      if (g > GRAM_EPSILON) return "losing";
+      if (g < -GRAM_EPSILON) return "gaining";
+      return "neutral";
+    }
+
+    function ForecastRow({ label, grams }: { label: string; grams: number }) {
+      const trend = gramsTrend(grams);
+      const colorClass =
+        trend === "losing" ? "text-emerald-600"
+        : trend === "gaining" ? "text-red-500"
+        : "text-muted-foreground";
+      const arrow = trend === "losing" ? "↓" : trend === "gaining" ? "↑" : "";
+
+      return (
+        <div className="flex items-baseline justify-end gap-2">
+          <span className="text-[10px] tracking-wider text-muted-foreground">{label}</span>
+          <span className={`text-sm font-bold tabular-nums ${colorClass}`}>
+            {arrow}{formatGrams(grams)}
+          </span>
+        </div>
+      );
+    }
+
+    function LiveBurnCounter({ burnRate, consumed, limit, isToday }: { burnRate: number | null; consumed: number; limit: number | null; isToday: boolean }) {
       const burn = useLiveBurn(burnRate, consumed, isToday);
       if (!burn) return null;
 
@@ -843,12 +980,22 @@ HTML = """\
       const gaining = burn.grams < 0;
       const colorClass = losing ? "text-emerald-600" : gaining ? "text-red-500" : "";
 
-      // Forecast: "if you don't eat anymore" → full day deficit, repeated
-      const endOfDayDeficit = burnRate! - consumed;
-      const eodGrams = endOfDayDeficit / KCAL_PER_GRAM_FAT;
-      const weekGrams = eodGrams * 7;
-      const monthGrams = eodGrams * 30;
-      const eodLosing = eodGrams > 0;
+      // Scenario A — you eat nothing else today. Independent of the limit.
+      const stopTodayGrams = (burnRate! - consumed) / KCAL_PER_GRAM_FAT;
+
+      // Scenario B — you eat up to the limit. You cannot un-eat what is already
+      // logged, so a day already past its limit lands on the actual intake.
+      const limitDayIntake = limit !== null ? Math.max(consumed, limit) : consumed;
+      const limitTodayGrams = (burnRate! - limitDayIntake) / KCAL_PER_GRAM_FAT;
+      const alreadyOverLimit = limit !== null && consumed > limit;
+
+      // Future days start empty, so they use the limit itself. With no limit set
+      // the only honest projection is "every day like today".
+      const futureDayGrams =
+        limit !== null ? (burnRate! - limit) / KCAL_PER_GRAM_FAT : stopTodayGrams;
+      const baseTodayGrams = limit !== null ? limitTodayGrams : stopTodayGrams;
+      const weekGrams = baseTodayGrams + futureDayGrams * 6;
+      const monthGrams = baseTodayGrams + futureDayGrams * 29;
 
       return (
         <div className="border-2 border-foreground p-4">
@@ -875,28 +1022,43 @@ HTML = """\
               </div>
             </div>
 
-            {/* Right: forecast */}
+            {/* Right: forecasts. Each block states its own assumption, so the
+                numbers are never a mix of two different scenarios. */}
             {isToday && (
-              <div className="text-right space-y-1.5 border-l border-muted pl-4">
-                <div className="text-[10px] tracking-wider text-muted-foreground mb-2">IF YOU STOP EATING</div>
-                <div className="flex items-baseline justify-end gap-2">
-                  <span className="text-[10px] tracking-wider text-muted-foreground">TODAY</span>
-                  <span className={`text-sm font-bold tabular-nums ${eodLosing ? "text-emerald-600" : "text-red-500"}`}>
-                    {eodLosing ? "↓" : "↑"}{formatGrams(eodGrams)}
-                  </span>
+              <div className="text-right space-y-3 border-l border-muted pl-4">
+                <div className="space-y-1.5">
+                  <div className="text-[10px] tracking-wider text-muted-foreground">
+                    IF YOU STOP EATING NOW
+                  </div>
+                  <ForecastRow label="TODAY" grams={stopTodayGrams} />
                 </div>
-                <div className="flex items-baseline justify-end gap-2">
-                  <span className="text-[10px] tracking-wider text-muted-foreground">7 DAYS</span>
-                  <span className={`text-sm font-bold tabular-nums ${eodLosing ? "text-emerald-600" : "text-red-500"}`}>
-                    {eodLosing ? "↓" : "↑"}{formatGrams(weekGrams)}
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-end gap-2">
-                  <span className="text-[10px] tracking-wider text-muted-foreground">30 DAYS</span>
-                  <span className={`text-sm font-bold tabular-nums ${eodLosing ? "text-emerald-600" : "text-red-500"}`}>
-                    {eodLosing ? "↓" : "↑"}{formatGrams(monthGrams)}
-                  </span>
-                </div>
+
+                {limit !== null ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] tracking-wider text-muted-foreground">
+                      IF YOU EAT {limit} KCAL/DAY
+                    </div>
+                    <ForecastRow label="TODAY" grams={limitTodayGrams} />
+                    <ForecastRow label="7 DAYS" grams={weekGrams} />
+                    <ForecastRow label="30 DAYS" grams={monthGrams} />
+                    {alreadyOverLimit && (
+                      <div className="text-[10px] tracking-wider text-muted-foreground">
+                        TODAY ALREADY OVER LIMIT
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] tracking-wider text-muted-foreground">
+                      IF EVERY DAY LIKE TODAY
+                    </div>
+                    <ForecastRow label="7 DAYS" grams={weekGrams} />
+                    <ForecastRow label="30 DAYS" grams={monthGrams} />
+                    <div className="text-[10px] tracking-wider text-muted-foreground">
+                      SET A LIMIT FOR A REAL FORECAST
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -913,13 +1075,13 @@ HTML = """\
       const { register, handleSubmit, reset, formState: { isValid } } = useForm<AddEntryFields>({
         defaultValues: { kcal: "", description: "" },
       });
-      const queryClient = useQueryClient();
+      const invalidate = useInvalidateDayAndStats(date);
 
       const mutation = useMutation({
-        mutationFn: (data: { kcal: number; description: string; date: string }) =>
+        mutationFn: (data: { kcal: number; description: string; date: string; time: string }) =>
           kcalClient.addEntry(data),
         onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: dayKeys.day(date) });
+          invalidate();
           reset();
         },
       });
@@ -961,13 +1123,11 @@ HTML = """\
     }
 
     function EntryItem({ entry, date }: { entry: Entry; date: string }) {
-      const queryClient = useQueryClient();
+      const invalidate = useInvalidateDayAndStats(date);
 
       const mutation = useMutation({
         mutationFn: () => kcalClient.deleteEntry(entry.id),
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: dayKeys.day(date) });
-        },
+        onSuccess: invalidate,
       });
 
       return (
@@ -990,7 +1150,7 @@ HTML = """\
 
     function CumulativeWeightChange() {
       const { data } = useSuspenseQuery({
-        queryKey: ["cumulative"],
+        queryKey: statsKeys.cumulative,
         queryFn: () => kcalClient.getCumulative(),
         refetchInterval: 60000,
       });
@@ -1012,7 +1172,7 @@ HTML = """\
       return (
         <div className="border-2 border-dashed border-foreground px-4 py-3 flex items-center justify-between">
           <div>
-            <div className="text-[10px] tracking-wider text-muted-foreground">TOTAL BURNED SINCE START</div>
+            <div className="text-[10px] tracking-wider text-muted-foreground">NET WEIGHT CHANGE SINCE START</div>
             <div className="text-[10px] tracking-wider text-muted-foreground">{data.days_counted} DAYS COUNTED</div>
           </div>
           <div className={`text-2xl font-bold tabular-nums tracking-tight ${colorClass}`}>
@@ -1027,15 +1187,15 @@ HTML = """\
       const [selectedDays, setSelectedDays] = useState(7);
       const [customInput, setCustomInput] = useState("");
       const [isCustom, setIsCustom] = useState(false);
-      const queryClient = useQueryClient();
 
       const { data } = useSuspenseQuery({
-        queryKey: ["average", selectedDays],
+        queryKey: [...statsKeys.average, selectedDays],
         queryFn: () => kcalClient.getAverage(selectedDays),
         refetchInterval: 60000,
       });
 
-      if (data.days_counted === 0 && !isCustom) return null;
+      // Never hide the range controls: an empty 7-day window must still allow
+      // switching to 14/30/custom, where older data may exist.
 
       return (
         <div className="px-4 py-3 space-y-3">
@@ -1065,7 +1225,7 @@ HTML = """\
               onSubmit={(e) => {
                 e.preventDefault();
                 const val = parseInt(customInput);
-                if (val > 0) { setSelectedDays(val); setIsCustom(true); }
+                if (val > 0) { setSelectedDays(Math.min(val, MAX_AVERAGE_DAYS)); setIsCustom(true); }
               }}
               className="flex items-center gap-1 ml-auto"
             >
@@ -1074,6 +1234,8 @@ HTML = """\
                 value={customInput}
                 onChange={(e) => setCustomInput(e.target.value)}
                 placeholder="N"
+                min={1}
+                max={MAX_AVERAGE_DAYS}
                 className="w-12 text-[10px] border-2 border-foreground px-1.5 py-1 bg-transparent font-mono focus:outline-none placeholder:text-muted-foreground text-center"
               />
               <button
@@ -1093,10 +1255,10 @@ HTML = """\
     }
 
     function SkipDayToggle({ skipped, date }: { skipped: boolean; date: string }) {
-      const queryClient = useQueryClient();
+      const invalidate = useInvalidateDayAndStats(date);
       const mutation = useMutation({
         mutationFn: (newSkipped: boolean) => kcalClient.setSkipped({ skipped: newSkipped, date }),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: dayKeys.day(date) }),
+        onSuccess: invalidate,
       });
 
       return (
@@ -1129,7 +1291,7 @@ HTML = """\
                   🍕 CHEAT DAY
                 </div>
                 <div className="text-xs tracking-wider mt-0.5 text-yellow-500">
-                  NOT COUNTING
+                  COUNTS AS {SKIPPED_DAY_KCAL} KCAL
                 </div>
               </div>
               <SkipDayToggle skipped={data.skipped} date={date} />
@@ -1137,7 +1299,9 @@ HTML = """\
 
             {data.entries.length > 0 && (
               <div className="border-t border-muted pt-1 opacity-50">
-                <div className="text-[10px] tracking-wider text-muted-foreground mb-2">ENTRIES (NOT COUNTED)</div>
+                <div className="text-[10px] tracking-wider text-muted-foreground mb-2">
+                  ENTRIES (IGNORED — DAY SCORED AS {SKIPPED_DAY_KCAL})
+                </div>
                 {data.entries.map((entry) => (
                   <EntryItem key={entry.id} entry={entry} date={date} />
                 ))}
@@ -1174,7 +1338,7 @@ HTML = """\
 
                 <ProgressBar total={data.total} limit={data.limit} />
 
-                <LiveBurnCounter burnRate={data.burn} consumed={data.total} isToday={isCurrentDay} />
+                <LiveBurnCounter burnRate={data.burn} consumed={data.total} limit={data.limit} isToday={isCurrentDay} />
               </>
             );
           })()}
@@ -1228,6 +1392,16 @@ HTML = """\
 
       useEffect(() => {
         const handler = (e: KeyboardEvent) => {
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          // Do not hijack arrow keys used for cursor movement inside a field.
+          const target = e.target as HTMLElement | null;
+          if (
+            target &&
+            (target.isContentEditable ||
+              ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+          ) {
+            return;
+          }
           if (e.key === "ArrowLeft") goBack();
           if (e.key === "ArrowRight") goForward();
         };
@@ -1279,7 +1453,7 @@ HTML = """\
 
               {/* Body */}
               <div className="flex-1 sm:flex-none border-b-2 border-foreground sm:border-2 sm:border-t-0 p-5">
-                <ErrorBoundary FallbackComponent={ErrorFallback}>
+                <ErrorBoundary FallbackComponent={ErrorFallback} resetKeys={[date]}>
                   <Suspense fallback={<LoadingFallback />}>
                     <DayView date={date} />
                   </Suspense>
