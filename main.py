@@ -27,7 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import AfterValidator, BaseModel, Field
 from pydantic_ai import Agent
-from pydantic_ai.models.openrouter import OpenRouterModel
+from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 log = logging.getLogger("kcal")
@@ -525,8 +525,7 @@ Rules:
   breakdown accounts for the whole description.
 - Only plant foods contain fiber; meat, fish, eggs and dairy have none.
 - The calorie count is a hint about portion size; keep your estimate consistent
-  with it. Protein supplies 4 kcal per gram and fat 9 kcal per gram, so protein
-  and fat together can never exceed the meal's calories.
+  with it. Protein supplies 4 kcal per gram and fat 9 kcal per gram
 """
 
 
@@ -619,7 +618,115 @@ class MacroEstimator:
         ]
 
 
+# ── Quick kcal estimation ─────────────────────────────────────────────
+
+KCAL_ESTIMATE_INSTRUCTIONS = """\
+You estimate the nutrition of a food or meal for a calorie tracking app.
+
+Break the description into its distinct food items. For each item give:
+- its weight in grams, and
+- its nutrition PER 100 GRAMS: kcal, protein, fat and fiber.
+
+Do NOT multiply or add anything up yourself. The app multiplies each item's
+per-100g figures by its weight and sums the items. Your job is only to supply
+accurate weights and per-100g densities.
+
+Rules:
+- Echo each item's quantity from the description exactly, e.g. "955g red
+  cabbage", "177g sausage".
+- If the user gives per-100g or per-serving nutrition values for an item, use
+  those exact values. Do not substitute your own.
+- Use realistic reference densities for common foods, e.g. raw red cabbage
+  ~25 kcal/100g, boiled lentils ~116 kcal/100g.
+- Assume ordinary supermarket products and typical serving sizes when the
+  description is vague. Never ask for clarification.
+- Only plant foods contain fiber; meat, fish, eggs and dairy have none.
+- Give a one-line note listing the assumptions (which products / reference
+  values you used).
+"""
+
+
+class QuickEstimateItem(BaseModel):
+    """One food item with its weight and per-100g nutrition."""
+
+    name: str = Field(description="The food including its quantity, echoed from the description")
+    grams: float = Field(ge=0, description="Weight of this item in grams")
+    kcal_per_100g: float = Field(ge=0, description="Energy per 100g in kcal")
+    protein_per_100g: float = Field(ge=0, description="Grams of protein per 100g")
+    fat_per_100g: float = Field(ge=0, description="Grams of fat per 100g")
+    fiber_per_100g: float = Field(ge=0, description="Grams of dietary fiber per 100g")
+
+
+class KcalEstimateResult(BaseModel):
+    """A per-item nutrition estimate the app totals up itself."""
+
+    items: list[QuickEstimateItem]
+    note: str = Field(description="One-line explanation of the assumptions behind the figures")
+
+
+class KcalEstimator:
+    """Estimates kcal and macros for a free-text food description via one LLM call.
+
+    The model supplies per-item weights and per-100g densities only; the totals
+    are computed here so arithmetic is exact rather than hallucinated. Standalone
+    and stateless: it answers a question and stores nothing.
+    """
+
+    def __init__(self, api_key: str, model_name: str = MACRO_MODEL) -> None:
+        model = OpenRouterModel(model_name, provider=OpenRouterProvider(api_key=api_key))
+        # Give the model room to reason: it has to pick realistic per-100g
+        # densities and honour any values the user supplies, which is worth the
+        # extra latency for a one-off, on-demand estimate.
+        settings = OpenRouterModelSettings(openrouter_reasoning={"effort": "high"})
+        self._agent = Agent(
+            model,
+            output_type=KcalEstimateResult,
+            instructions=KCAL_ESTIMATE_INSTRUCTIONS,
+            model_settings=settings,
+            retries=0,
+        )
+
+    async def estimate(self, description: str) -> dict:
+        result = await asyncio.wait_for(
+            self._agent.run(f"Food: {description}"),
+            timeout=MACRO_TIMEOUT_S,
+        )
+        return self._compute(result.output)
+
+    @staticmethod
+    def _compute(out: "KcalEstimateResult") -> dict:
+        """Multiply per-100g figures by weight and sum — in code, not the LLM."""
+        items: list[dict] = []
+        total_kcal = 0.0
+        totals = {name: 0.0 for name in MACRO_NAMES}
+        for it in out.items:
+            if not it.name.strip():
+                continue
+            factor = max(0.0, it.grams) / 100
+            kcal = max(0.0, it.kcal_per_100g) * factor
+            macros = {
+                name: max(0.0, getattr(it, f"{name}_per_100g")) * factor
+                for name in MACRO_NAMES
+            }
+            total_kcal += kcal
+            for name in MACRO_NAMES:
+                totals[name] += macros[name]
+            items.append({
+                "name": it.name.strip(),
+                "grams": round(max(0.0, it.grams), 1),
+                "kcal": round(kcal),
+                **{f"{name}_g": round(macros[name], 1) for name in MACRO_NAMES},
+            })
+        return {
+            "kcal": round(total_kcal),
+            "macros": {name: round(totals[name], 1) for name in MACRO_NAMES},
+            "items": items,
+            "note": out.note.strip(),
+        }
+
+
 estimator: MacroEstimator | None = None
+kcal_estimator: KcalEstimator | None = None
 
 
 def build_estimator() -> MacroEstimator | None:
@@ -632,6 +739,18 @@ def build_estimator() -> MacroEstimator | None:
         return MacroEstimator(api_key)
     except Exception:
         log.exception("Could not build macro estimator — macro estimation disabled")
+        return None
+
+
+def build_kcal_estimator() -> KcalEstimator | None:
+    """Build the quick-estimate helper, or return None without an API key."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return None
+    try:
+        return KcalEstimator(api_key)
+    except Exception:
+        log.exception("Could not build kcal estimator — quick estimate disabled")
         return None
 
 
@@ -678,6 +797,23 @@ class SetBurnRequest(BaseModel):
 class SetSkippedRequest(BaseModel):
     skipped: bool
     date: DateStr
+
+class EstimateRequest(BaseModel):
+    description: DescriptionStr
+
+class EstimateItem(BaseModel):
+    name: str
+    grams: float
+    kcal: int
+    protein_g: float
+    fat_g: float
+    fiber_g: float
+
+class EstimateResponse(BaseModel):
+    kcal: int
+    macros: dict[str, float] = {}
+    items: list[EstimateItem] = []
+    note: str
 
 class MacroItemResponse(BaseModel):
     name: str
@@ -812,6 +948,19 @@ async def set_burn(body: SetBurnRequest):
 async def set_skipped(body: SetSkippedRequest):
     repo.set_skipped(body.date, body.skipped)
     return {"date": body.date, "skipped": body.skipped}
+
+
+@api.post("/estimate", response_model=EstimateResponse)
+async def estimate_kcal(body: EstimateRequest):
+    """Answer "how many kcal is this?" without saving anything."""
+    if kcal_estimator is None:
+        raise HTTPException(status_code=503, detail="Estimation is not configured")
+    try:
+        result = await kcal_estimator.estimate(body.description)
+    except Exception as exc:
+        log.warning("Quick kcal estimate failed for %r: %s", body.description, exc)
+        raise HTTPException(status_code=502, detail="Could not estimate calories — try again")
+    return EstimateResponse(**result)
 
 
 @api.get("/cumulative")
@@ -1052,6 +1201,13 @@ HTML = """\
         api.get("cumulative").json<{ total_grams: number; days_counted: number }>(),
       getAverage: (days: number) =>
         api.get(`average/${days}`).json<{ days_requested: number; days_counted: number; average_kcal: number }>(),
+      estimate: (description: string) =>
+        api.post("estimate", { json: { description } }).json<{
+          kcal: number;
+          macros: Macros;
+          items: { name: string; grams: number; kcal: number; protein_g: number; fat_g: number; fiber_g: number }[];
+          note: string;
+        }>(),
     } as const;
 
     // ── Helpers ──────────────────────────────────────────────────
@@ -1909,6 +2065,167 @@ HTML = """\
       );
     }
 
+    // The estimate contents (form + result). Lives inside the modal so it has
+    // room to breathe; the breakdown table needs the width.
+    function QuickEstimateBody({ onClose }: { onClose: () => void }) {
+      const [input, setInput] = useState("");
+      const mutation = useMutation({
+        mutationFn: (description: string) => kcalClient.estimate(description),
+      });
+
+      const onSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        const description = input.trim();
+        if (description) mutation.mutate(description);
+      };
+
+      return (
+        <>
+          <div className="flex items-start justify-between px-5 py-4 border-b-2 border-foreground">
+            <div>
+              <h2 className="text-xs font-bold tracking-[0.3em]">KCAL ESTIMATOR</h2>
+              <p className="text-[10px] tracking-wider text-muted-foreground mt-1">
+                ASK, DON'T TRACK
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="w-8 h-8 border-2 border-foreground flex items-center justify-center text-sm font-bold hover:bg-foreground hover:text-background transition-colors shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4 overflow-y-auto">
+            <form onSubmit={onSubmit} className="flex flex-col gap-0">
+              <textarea
+                autoFocus
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    onSubmit(e as unknown as React.FormEvent);
+                  }
+                }}
+                placeholder="e.g. 955g red cabbage, 177g sausage, 952g cooked lentils"
+                rows={4}
+                disabled={mutation.isPending}
+                className="w-full border-2 border-foreground px-3 py-2.5 text-sm bg-transparent font-mono focus:outline-none placeholder:text-muted-foreground resize-y"
+              />
+              <button
+                type="submit"
+                disabled={mutation.isPending || input.trim().length === 0}
+                className="border-2 border-t-0 border-foreground px-4 py-2.5 text-sm font-bold bg-foreground text-background hover:bg-transparent hover:text-foreground transition-colors disabled:opacity-30"
+              >
+                {mutation.isPending ? "THINKING..." : "ASK"}
+              </button>
+              <p className="text-[10px] tracking-wider text-muted-foreground mt-1.5">
+                ⌘/CTRL + ENTER TO ASK
+              </p>
+            </form>
+
+            {mutation.data && !mutation.isPending && (
+              <div className="border-2 border-dashed border-foreground px-4 py-3">
+                <div className="text-4xl font-bold tabular-nums tracking-tight">
+                  {mutation.data.kcal} <span className="text-sm tracking-wider text-muted-foreground">KCAL</span>
+                </div>
+                <div className="text-sm tracking-wider mt-1 text-muted-foreground tabular-nums">
+                  {MACROS.map((m, i) => (
+                    <span key={m.key}>
+                      {i > 0 && <span className="mx-1.5 text-muted-foreground/40">·</span>}
+                      <span className="font-bold text-foreground">{fmtGrams(mutation.data.macros[m.key])}</span> {m.label}
+                    </span>
+                  ))}
+                </div>
+
+                {mutation.data.items.length > 0 && (
+                  <div className="mt-4 text-xs text-muted-foreground">
+                    <div className="flex gap-3 pb-1.5 border-b border-muted text-muted-foreground/60 tracking-wider">
+                      <span className="flex-1">ITEM</span>
+                      <span className="w-16 text-right shrink-0">KCAL</span>
+                      {MACROS.map((m) => (
+                        <span key={m.key} className="w-14 text-right shrink-0">{m.short}</span>
+                      ))}
+                    </div>
+                    {mutation.data.items.map((item, i) => (
+                      <div key={i} className="flex gap-3 py-1 border-b border-muted last:border-b-0">
+                        <span className="flex-1 break-words text-foreground">{item.name}</span>
+                        <span className="w-16 text-right tabular-nums shrink-0">{item.kcal}</span>
+                        {MACROS.map((m) => (
+                          <span key={m.key} className="w-14 text-right tabular-nums shrink-0">
+                            {fmtGrams(item[`${m.key}_g`])}
+                          </span>
+                        ))}
+                      </div>
+                    ))}
+                    <div className="flex gap-3 py-1.5 mt-1 border-t-2 border-foreground text-foreground">
+                      <span className="flex-1 tracking-wider font-bold">TOTAL</span>
+                      <span className="w-16 text-right tabular-nums font-bold shrink-0">{mutation.data.kcal}</span>
+                      {MACROS.map((m) => (
+                        <span key={m.key} className="w-14 text-right tabular-nums font-bold shrink-0">
+                          {fmtGrams(mutation.data.macros[m.key])}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {mutation.data.note && (
+                  <div className="text-[11px] tracking-wider text-muted-foreground mt-3">
+                    {mutation.data.note}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <AppErrorMessage error={mutation.error} />
+          </div>
+        </>
+      );
+    }
+
+    // Standalone "how many kcal is this?" tool. A trigger button opens a wide
+    // centered modal so the breakdown table has room. Never touches the tracked
+    // day — type a food, ask, read the answer. Nothing is saved.
+    function QuickEstimate() {
+      const [open, setOpen] = useState(false);
+
+      // Esc closes; remounting the body on each open clears the previous answer.
+      useEffect(() => {
+        if (!open) return;
+        const h = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+        window.addEventListener("keydown", h);
+        return () => window.removeEventListener("keydown", h);
+      }, [open]);
+
+      return (
+        <>
+          <button
+            onClick={() => setOpen(true)}
+            className="w-full border-2 border-foreground px-4 py-3 text-xs font-bold tracking-[0.3em] hover:bg-foreground hover:text-background transition-colors"
+          >
+            ≈ KCAL ESTIMATOR
+          </button>
+
+          {open && (
+            <div
+              onClick={() => setOpen(false)}
+              className="fixed inset-0 z-50 bg-black/50 flex items-start sm:items-center justify-center p-3 sm:p-6 overflow-y-auto"
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-2xl bg-background border-2 border-foreground max-h-[90dvh] flex flex-col my-auto"
+              >
+                <QuickEstimateBody onClose={() => setOpen(false)} />
+              </div>
+            </div>
+          )}
+        </>
+      );
+    }
+
     function ErrorFallback({ error, resetErrorBoundary }: { error: Error; resetErrorBoundary: () => void }) {
       return <AppErrorMessage error={error} retry={resetErrorBoundary} />;
     }
@@ -2025,6 +2342,12 @@ HTML = """\
                 </ErrorBoundary>
               </div>
 
+              {/* Quick estimator: a trigger button in the flow that opens a wide
+                  centered modal, so the breakdown table has room to render. */}
+              <div className="mt-4 sm:mt-3">
+                <QuickEstimate />
+              </div>
+
               {/* Footer */}
               <div className="text-center py-3 sm:mt-3 sm:py-0">
                 <span className="text-[10px] tracking-wider text-muted-foreground">
@@ -2054,10 +2377,11 @@ async def spa(path: str):
 @click.option("--port", default=8765, type=int, help="Bind port")
 @click.option("--db", default="kcal.db", show_default=True, help="Path to SQLite database")
 def main(host: str, port: int | None, db: str):
-    global repo, estimator
+    global repo, estimator, kcal_estimator
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     repo = SqliteKcalRepository(db)
     estimator = build_estimator()
+    kcal_estimator = build_kcal_estimator()
     uvicorn.run(app, host=host, port=port)
 
 
