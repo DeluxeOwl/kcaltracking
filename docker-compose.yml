@@ -3,6 +3,9 @@ services:
     build: .
     ports:
       - "8765:8765"
+    environment:
+      # Optional. Without it the app runs exactly as before, minus protein estimates.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       - ./data:/app/data
     restart: always
