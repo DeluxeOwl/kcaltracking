@@ -80,12 +80,25 @@ DescriptionStr = Annotated[str, Field(max_length=500), AfterValidator(_validate_
 
 # ── Domain ────────────────────────────────────────────────────────────
 
-# Protein estimates are best-effort: an entry is always saved and counted for
-# kcal even when the LLM is unavailable or returns nonsense.
-PROTEIN_PENDING = "pending"    # estimate in flight
-PROTEIN_OK = "ok"              # estimate stored
-PROTEIN_FAILED = "failed"      # LLM call failed; retryable
-PROTEIN_SKIPPED = "skipped"    # estimator disabled (no API key), or a legacy row
+# Macro estimates are best-effort: an entry is always saved and counted for kcal
+# even when the LLM is unavailable or returns nonsense. Protein, fat and fiber
+# come from one call, so a single state covers all three.
+MACROS_PENDING = "pending"    # estimate in flight
+MACROS_OK = "ok"              # estimate stored
+MACROS_FAILED = "failed"      # LLM call failed; retryable
+MACROS_SKIPPED = "skipped"    # estimator disabled (no API key), or a legacy row
+
+# The macros tracked per entry, in display order. Adding one here carries it
+# through the repository, the API and the UI without further plumbing.
+MACRO_NAMES = ("protein", "fat", "fiber")
+
+
+def totals_from_items(items: list[dict]) -> dict[str, float]:
+    """Sum a per-item breakdown into one total per macro."""
+    return {
+        name: round(sum(item.get(f"{name}_g", 0) or 0 for item in items), 1)
+        for name in MACRO_NAMES
+    }
 
 
 class KcalEntry:
@@ -95,17 +108,19 @@ class KcalEntry:
         description: str,
         entry_date: str,
         created_at: str | None = None,
-        protein_g: float | None = None,
-        protein_items: list[dict] | None = None,
-        protein_state: str = PROTEIN_SKIPPED,
+        macros: dict[str, float] | None = None,
+        macro_items: list[dict] | None = None,
+        macros_state: str = MACROS_SKIPPED,
     ) -> None:
         self.kcal = kcal
         self.description = description
         self.entry_date = entry_date
         self.created_at = created_at or datetime.now().strftime("%H:%M")
-        self.protein_g = protein_g
-        self.protein_items = protein_items or []
-        self.protein_state = protein_state
+        # Totals per macro name, e.g. {"protein": 29.8, "fat": 18.0, "fiber": 4.2}.
+        # Empty when there is no estimate.
+        self.macros = macros or {}
+        self.macro_items = macro_items or []
+        self.macros_state = macros_state
         self.id: int | None = None
 
 
@@ -125,9 +140,7 @@ class KcalRepository(ABC):
     def get_entry(self, entry_id: int) -> KcalEntry | None: ...
 
     @abstractmethod
-    def set_protein(
-        self, entry_id: int, protein_g: float | None, items: list[dict] | None, state: str
-    ) -> bool: ...
+    def set_macros(self, entry_id: int, items: list[dict] | None, state: str) -> bool: ...
 
     @abstractmethod
     def get_limit(self, entry_date: str) -> int | None: ...
@@ -191,51 +204,70 @@ class SqliteKcalRepository(KcalRepository):
         self._conn.commit()
 
     def _migrate_entries(self) -> None:
-        """Add columns missing from an existing database.
+        """Bring an existing database up to the current schema.
 
         CREATE TABLE IF NOT EXISTS never alters a table that already exists, so
         databases created before a column was introduced need an explicit ALTER.
         Existing rows land on the column default.
         """
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(entries)")}
+
+        # The first version of this feature tracked protein alone, so its columns
+        # were named for it. They now hold all three macros.
+        renames = {"protein_items": "macro_items", "protein_state": "macros_state"}
+        for old_name, new_name in renames.items():
+            if old_name in existing and new_name not in existing:
+                self._conn.execute(f"ALTER TABLE entries RENAME COLUMN {old_name} TO {new_name}")
+                existing.discard(old_name)
+                existing.add(new_name)
+
         wanted = {
-            "protein_g": "REAL",
-            "protein_items": "TEXT",
-            "protein_state": f"TEXT NOT NULL DEFAULT '{PROTEIN_SKIPPED}'",
+            **{f"{name}_g": "REAL" for name in MACRO_NAMES},
+            "macro_items": "TEXT",
+            "macros_state": f"TEXT NOT NULL DEFAULT '{MACROS_SKIPPED}'",
         }
         for column, ddl in wanted.items():
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE entries ADD COLUMN {column} {ddl}")
 
-    @staticmethod
-    def _row_to_entry(row: tuple) -> KcalEntry:
-        row_id, kcal, description, d, created_at, protein_g, protein_items, protein_state = row
-        try:
-            items = json.loads(protein_items) if protein_items else []
-        except ValueError:
-            items = []
-        e = KcalEntry(kcal, description, d, created_at, protein_g, items, protein_state)
-        e.id = row_id
-        return e
+    _MACRO_COLUMNS = tuple(f"{name}_g" for name in MACRO_NAMES)
 
     _SELECT_ENTRY = (
         "SELECT id, kcal, description, entry_date, created_at, "
-        "protein_g, protein_items, protein_state FROM entries"
+        + ", ".join(_MACRO_COLUMNS)
+        + ", macro_items, macros_state FROM entries"
     )
 
+    @staticmethod
+    def _row_to_entry(row: tuple) -> KcalEntry:
+        row_id, kcal, description, d, created_at = row[:5]
+        totals = row[5:5 + len(MACRO_NAMES)]
+        macro_items, macros_state = row[5 + len(MACRO_NAMES):]
+        try:
+            items = json.loads(macro_items) if macro_items else []
+        except ValueError:
+            items = []
+        macros = {name: value for name, value in zip(MACRO_NAMES, totals) if value is not None}
+        e = KcalEntry(kcal, description, d, created_at, macros, items, macros_state)
+        e.id = row_id
+        return e
+
     def add_entry(self, entry: KcalEntry) -> KcalEntry:
+        columns = ", ".join(self._MACRO_COLUMNS)
+        placeholders = ", ".join("?" * len(MACRO_NAMES))
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO entries (kcal, description, entry_date, created_at, "
-                "protein_g, protein_items, protein_state) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO entries (kcal, description, entry_date, created_at, "
+                f"{columns}, macro_items, macros_state) "
+                f"VALUES (?, ?, ?, ?, {placeholders}, ?, ?)",
                 (
                     entry.kcal,
                     entry.description,
                     entry.entry_date,
                     entry.created_at,
-                    entry.protein_g,
-                    json.dumps(entry.protein_items) if entry.protein_items else None,
-                    entry.protein_state,
+                    *(entry.macros.get(name) for name in MACRO_NAMES),
+                    json.dumps(entry.macro_items) if entry.macro_items else None,
+                    entry.macros_state,
                 ),
             )
             self._conn.commit()
@@ -262,19 +294,25 @@ class SqliteKcalRepository(KcalRepository):
         ).fetchone()
         return self._row_to_entry(row) if row else None
 
-    def set_protein(
-        self, entry_id: int, protein_g: float | None, items: list[dict] | None, state: str
-    ) -> bool:
-        """Store a protein estimate. Returns False if the entry no longer exists.
+    def set_macros(self, entry_id: int, items: list[dict] | None, state: str) -> bool:
+        """Store a macro estimate. Returns False if the entry no longer exists.
 
-        An entry can be deleted while its estimate is still in flight, which is a
-        normal outcome rather than an error.
+        Totals are derived from the per-item breakdown so the two can never
+        disagree. An entry can be deleted while its estimate is still in flight,
+        which is a normal outcome rather than an error.
         """
+        totals = totals_from_items(items) if items else {}
+        assignments = ", ".join(f"{col} = ?" for col in self._MACRO_COLUMNS)
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE entries SET protein_g = ?, protein_items = ?, protein_state = ? "
-                "WHERE id = ?",
-                (protein_g, json.dumps(items) if items else None, state, entry_id),
+                f"UPDATE entries SET {assignments}, macro_items = ?, macros_state = ? "
+                f"WHERE id = ?",
+                (
+                    *(totals.get(name) for name in MACRO_NAMES),
+                    json.dumps(items) if items else None,
+                    state,
+                    entry_id,
+                ),
             )
             self._conn.commit()
         return cur.rowcount > 0
@@ -455,21 +493,27 @@ class SqliteKcalRepository(KcalRepository):
         }
 
 
-# ── Protein estimation ────────────────────────────────────────────────
+# ── Macro estimation ──────────────────────────────────────────────────
 
-PROTEIN_MODEL = "google/gemini-3.5-flash-lite"
-PROTEIN_TIMEOUT_S = 30
-# Protein carries 4 kcal/g, so an estimate above kcal/4 is physically impossible
-# and means the model hallucinated. A little slack absorbs rounding and the fact
-# that the user's own kcal figure is itself an estimate.
-PROTEIN_KCAL_PER_G = 4
-PROTEIN_SLACK = 1.15
+MACRO_MODEL = "google/gemini-3.5-flash-lite"
+MACRO_TIMEOUT_S = 30
+# Atwater factors: the energy each macronutrient supplies per gram.
+KCAL_PER_G_PROTEIN = 4
+KCAL_PER_G_FAT = 9
+# Fiber is a subset of carbohydrate and yields ~2 kcal/g.
+KCAL_PER_G_FIBER = 2
+# Protein and fat together can account for nearly all of a meal's energy, so an
+# estimate whose combined energy overshoots the stated calories is not physically
+# possible. The slack absorbs rounding and the fact that the user's own kcal
+# figure is itself a rough estimate.
+MACRO_SLACK = 1.25
 
-PROTEIN_INSTRUCTIONS = """\
-You estimate the protein content of meals for a calorie tracking app.
+MACRO_INSTRUCTIONS = """\
+You estimate the macronutrient content of meals for a calorie tracking app.
 
 Given a short meal description and its approximate calorie count, break the meal
-into its distinct food items and estimate the grams of protein in each one.
+into its distinct food items and estimate the grams of protein, fat and fiber in
+each one.
 
 Rules:
 - One entry per distinct food, in the order mentioned in the description.
@@ -477,84 +521,122 @@ Rules:
   "2 slices of protein bread", "a handful of almonds".
 - Assume ordinary supermarket products and typical serving sizes when the
   description is vague. Never ask for clarification.
-- Include zero-protein items (black coffee, water, an apple) with 0 grams so the
+- Include items that contribute nothing (black coffee, water) with 0 grams so the
   breakdown accounts for the whole description.
+- Only plant foods contain fiber; meat, fish, eggs and dairy have none.
 - The calorie count is a hint about portion size; keep your estimate consistent
-  with it. Protein supplies 4 kcal per gram, so total protein can never exceed
-  a quarter of the meal's calories.
+  with it. Protein supplies 4 kcal per gram and fat 9 kcal per gram, so protein
+  and fat together can never exceed the meal's calories.
 """
 
 
-class ProteinItem(BaseModel):
+class MacroItem(BaseModel):
     """A single food item within a meal."""
 
     name: str = Field(description="The food including its quantity, e.g. '3 eggs'")
     protein_g: float = Field(ge=0, description="Estimated grams of protein in this item")
+    fat_g: float = Field(ge=0, description="Estimated grams of fat in this item")
+    fiber_g: float = Field(ge=0, description="Estimated grams of dietary fiber in this item")
 
 
-class ProteinEstimate(BaseModel):
-    """A per-item protein breakdown of a meal."""
+class MacroEstimate(BaseModel):
+    """A per-item macronutrient breakdown of a meal."""
 
-    items: list[ProteinItem]
+    items: list[MacroItem]
 
 
-class ProteinEstimator:
-    """Estimates per-item protein for a meal description via a single LLM call.
+class MacroEstimator:
+    """Estimates per-item macros for a meal description via a single LLM call.
+
+    All three macros come from one call: they are a single judgement about what
+    the meal contains, and splitting them would triple latency and cost for no
+    gain in quality.
 
     Deliberately one-shot and failure-tolerant: callers treat any exception as
     "no estimate available" rather than an error worth surfacing.
     """
 
-    def __init__(self, api_key: str, model_name: str = PROTEIN_MODEL) -> None:
+    def __init__(self, api_key: str, model_name: str = MACRO_MODEL) -> None:
         model = OpenRouterModel(model_name, provider=OpenRouterProvider(api_key=api_key))
         # Tool output (the default) rather than NativeOutput: OpenRouter does not
-        # advertise native json_schema support for this model, and tool calls are
-        # measurably faster here anyway.
+        # advertise native json_schema support for these models, and tool calls
+        # are measurably faster here anyway.
         self._agent = Agent(
             model,
-            output_type=ProteinEstimate,
-            instructions=PROTEIN_INSTRUCTIONS,
+            output_type=MacroEstimate,
+            instructions=MACRO_INSTRUCTIONS,
             retries=0,
         )
 
     async def estimate(self, description: str, kcal: int) -> list[dict]:
         result = await asyncio.wait_for(
             self._agent.run(f"Meal (~{kcal} kcal): {description}"),
-            timeout=PROTEIN_TIMEOUT_S,
+            timeout=MACRO_TIMEOUT_S,
         )
         return self._sanitise(result.output.items, kcal)
 
     @staticmethod
-    def _sanitise(items: list[ProteinItem], kcal: int) -> list[dict]:
-        """Round to 1dp and scale the breakdown down if it exceeds what kcal allows."""
-        clean = [(item.name.strip(), max(0.0, item.protein_g)) for item in items if item.name.strip()]
-        total = sum(grams for _, grams in clean)
-        ceiling = kcal / PROTEIN_KCAL_PER_G * PROTEIN_SLACK
-        if total > ceiling > 0:
-            log.warning("Protein estimate %.1fg exceeds %.1fg allowed by %d kcal; scaling down", total, ceiling, kcal)
-            scale = ceiling / total
-            clean = [(name, grams * scale) for name, grams in clean]
-        return [{"name": name, "protein_g": round(grams, 1)} for name, grams in clean]
+    def _sanitise(items: list[MacroItem], kcal: int) -> list[dict]:
+        """Round to 1dp and scale the breakdown down to fit the meal's energy."""
+        clean = [
+            {
+                "name": item.name.strip(),
+                "protein_g": max(0.0, item.protein_g),
+                "fat_g": max(0.0, item.fat_g),
+                "fiber_g": max(0.0, item.fiber_g),
+            }
+            for item in items
+            if item.name.strip()
+        ]
+
+        # Protein and fat share the meal's energy budget, so they are scaled
+        # together to preserve their ratio rather than clamped independently.
+        energy = sum(i["protein_g"] * KCAL_PER_G_PROTEIN + i["fat_g"] * KCAL_PER_G_FAT for i in clean)
+        ceiling = kcal * MACRO_SLACK
+        if energy > ceiling > 0:
+            log.warning(
+                "Estimate implies %.0f kcal of protein+fat for a %d kcal meal; scaling down",
+                energy, kcal,
+            )
+            scale = ceiling / energy
+            for i in clean:
+                i["protein_g"] *= scale
+                i["fat_g"] *= scale
+
+        # Fiber has its own, far looser bound; it only catches outright nonsense.
+        fiber = sum(i["fiber_g"] for i in clean)
+        fiber_ceiling = kcal / KCAL_PER_G_FIBER
+        if fiber > fiber_ceiling > 0:
+            log.warning("Fiber estimate %.1fg exceeds the %.1fg a %d kcal meal allows; scaling down",
+                        fiber, fiber_ceiling, kcal)
+            scale = fiber_ceiling / fiber
+            for i in clean:
+                i["fiber_g"] *= scale
+
+        return [
+            {"name": i["name"], **{f"{n}_g": round(i[f"{n}_g"], 1) for n in MACRO_NAMES}}
+            for i in clean
+        ]
 
 
-estimator: ProteinEstimator | None = None
+estimator: MacroEstimator | None = None
 
 
-def build_estimator() -> ProteinEstimator | None:
+def build_estimator() -> MacroEstimator | None:
     """Build the estimator, or return None so the app runs without an API key."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        log.warning("OPENROUTER_API_KEY not set — protein estimation disabled")
+        log.warning("OPENROUTER_API_KEY not set — macro estimation disabled")
         return None
     try:
-        return ProteinEstimator(api_key)
+        return MacroEstimator(api_key)
     except Exception:
-        log.exception("Could not build protein estimator — protein estimation disabled")
+        log.exception("Could not build macro estimator — macro estimation disabled")
         return None
 
 
-async def estimate_protein_task(entry_id: int, description: str, kcal: int) -> None:
-    """Background task: estimate protein for an entry and store the result.
+async def estimate_macros_task(entry_id: int, description: str, kcal: int) -> None:
+    """Background task: estimate macros for an entry and store the result.
 
     Never raises. A failure leaves the entry marked 'failed', which the UI offers
     to retry; the entry's calories are unaffected either way.
@@ -564,18 +646,17 @@ async def estimate_protein_task(entry_id: int, description: str, kcal: int) -> N
     try:
         items = await estimator.estimate(description, kcal)
     except Exception as exc:
-        log.warning("Protein estimate failed for entry %s: %s", entry_id, exc)
+        log.warning("Macro estimate failed for entry %s: %s", entry_id, exc)
         try:
-            repo.set_protein(entry_id, None, None, PROTEIN_FAILED)
+            repo.set_macros(entry_id, None, MACROS_FAILED)
         except Exception:
             log.exception("Could not mark entry %s as failed", entry_id)
         return
-    total = round(sum(item["protein_g"] for item in items), 1)
     try:
-        if not repo.set_protein(entry_id, total, items, PROTEIN_OK):
-            log.info("Entry %s was deleted before its protein estimate arrived", entry_id)
+        if not repo.set_macros(entry_id, items, MACROS_OK):
+            log.info("Entry %s was deleted before its macro estimate arrived", entry_id)
     except Exception:
-        log.exception("Could not store protein estimate for entry %s", entry_id)
+        log.exception("Could not store macro estimate for entry %s", entry_id)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -598,28 +679,33 @@ class SetSkippedRequest(BaseModel):
     skipped: bool
     date: DateStr
 
-class ProteinItemResponse(BaseModel):
+class MacroItemResponse(BaseModel):
     name: str
-    protein_g: float
+    # Null rather than zero when a macro is genuinely unknown, which is the case
+    # for entries estimated before fat and fiber were tracked.
+    protein_g: float | None = None
+    fat_g: float | None = None
+    fiber_g: float | None = None
 
 class EntryResponse(BaseModel):
     id: int
     kcal: int
     description: str
     time: str
-    protein_g: float | None = None
-    protein_items: list[ProteinItemResponse] = []
-    protein_state: str = PROTEIN_SKIPPED
+    # Totals per macro name; empty when this entry has no estimate.
+    macros: dict[str, float] = {}
+    macro_items: list[MacroItemResponse] = []
+    macros_state: str = MACROS_SKIPPED
 
 class DayResponse(BaseModel):
     date: str
     limit: int | None
     burn: int | None
     total: int
-    total_protein_g: float
+    total_macros: dict[str, float]
     # False when at least one entry has no estimate, so the UI can flag the
-    # protein total as a partial figure.
-    protein_complete: bool
+    # macro totals as partial figures.
+    macros_complete: bool
     skipped: bool
     entries: list[EntryResponse]
 
@@ -636,9 +722,9 @@ def _entry_response(entry: KcalEntry) -> EntryResponse:
         kcal=entry.kcal,
         description=entry.description,
         time=entry.created_at,
-        protein_g=entry.protein_g,
-        protein_items=[ProteinItemResponse(**item) for item in entry.protein_items],
-        protein_state=entry.protein_state,
+        macros=entry.macros,
+        macro_items=[MacroItemResponse(**item) for item in entry.macro_items],
+        macros_state=entry.macros_state,
     )
 
 
@@ -655,8 +741,17 @@ async def get_day(day: str):
         limit=limit,
         burn=burn,
         total=total,
-        total_protein_g=round(sum(e.protein_g or 0 for e in entries), 1),
-        protein_complete=all(e.protein_state == PROTEIN_OK for e in entries),
+        # A macro is omitted entirely when no entry has a figure for it, so the
+        # UI can say "unknown" rather than imply a real zero.
+        total_macros={
+            name: round(sum(e.macros.get(name, 0) for e in entries), 1)
+            for name in MACRO_NAMES
+            if any(name in e.macros for e in entries)
+        },
+        macros_complete=all(
+            e.macros_state == MACROS_OK and all(name in e.macros for name in MACRO_NAMES)
+            for e in entries
+        ),
         skipped=skipped,
         entries=[_entry_response(e) for e in entries],
     )
@@ -672,24 +767,24 @@ async def add_entry(body: AddEntryRequest, background: BackgroundTasks):
         body.description,
         body.date,
         created_at=body.time,
-        protein_state=PROTEIN_PENDING if pending else PROTEIN_SKIPPED,
+        macros_state=MACROS_PENDING if pending else MACROS_SKIPPED,
     )
     repo.add_entry(entry)
     if pending:
-        background.add_task(estimate_protein_task, entry.id, entry.description, entry.kcal)
+        background.add_task(estimate_macros_task, entry.id, entry.description, entry.kcal)
     return _entry_response(entry)
 
 
-@api.post("/entries/{entry_id}/protein", response_model=EntryResponse, status_code=202)
-async def retry_protein(entry_id: int, background: BackgroundTasks):
+@api.post("/entries/{entry_id}/macros", response_model=EntryResponse, status_code=202)
+async def retry_macros(entry_id: int, background: BackgroundTasks):
     entry = repo.get_entry(entry_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
     if estimator is None:
-        raise HTTPException(status_code=503, detail="Protein estimation is not configured")
-    repo.set_protein(entry_id, None, None, PROTEIN_PENDING)
-    entry.protein_g, entry.protein_items, entry.protein_state = None, [], PROTEIN_PENDING
-    background.add_task(estimate_protein_task, entry_id, entry.description, entry.kcal)
+        raise HTTPException(status_code=503, detail="Macro estimation is not configured")
+    repo.set_macros(entry_id, None, MACROS_PENDING)
+    entry.macros, entry.macro_items, entry.macros_state = {}, [], MACROS_PENDING
+    background.add_task(estimate_macros_task, entry_id, entry.description, entry.kcal)
     return _entry_response(entry)
 
 
@@ -871,11 +966,15 @@ HTML = """\
 
     // ── Types ────────────────────────────────────────────────────
 
-    type ProteinState = "pending" | "ok" | "failed" | "skipped";
+    type MacrosState = "pending" | "ok" | "failed" | "skipped";
 
-    interface ProteinItem {
+    type Macros = Record<string, number>;
+
+    interface MacroItem {
       name: string;
       protein_g: number;
+      fat_g: number;
+      fiber_g: number;
     }
 
     interface Entry {
@@ -883,9 +982,9 @@ HTML = """\
       kcal: number;
       description: string;
       time: string;
-      protein_g: number | null;
-      protein_items: ProteinItem[];
-      protein_state: ProteinState;
+      macros: Macros;
+      macro_items: MacroItem[];
+      macros_state: MacrosState;
     }
 
     interface DayData {
@@ -893,11 +992,23 @@ HTML = """\
       limit: number | null;
       burn: number | null;
       total: number;
-      total_protein_g: number;
-      protein_complete: boolean;
+      total_macros: Macros;
+      macros_complete: boolean;
       skipped: boolean;
       entries: Entry[];
     }
+
+    // Display order and short labels. "FAT" and "FIB" are spelled out rather than
+    // both reduced to "F", which would be ambiguous.
+    const MACROS = [
+      { key: "protein", short: "P", label: "PROTEIN" },
+      { key: "fat", short: "FAT", label: "FAT" },
+      { key: "fiber", short: "FIB", label: "FIBER" },
+    ] as const;
+
+    // Aligns a row's sub-lines under its description: time (w-11) + gap-3 +
+    // kcal (w-12) + gap-3.
+    const MACRO_INDENT = "ml-[7.25rem]";
 
     // ── Query keys ───────────────────────────────────────────────
 
@@ -930,7 +1041,7 @@ HTML = """\
       addEntry: (data: { kcal: number; description: string; date: string; time: string }) =>
         api.post("entries", { json: data }).json<Entry>(),
       deleteEntry: (id: number) => api.delete(`entries/${id}`),
-      retryProtein: (id: number) => api.post(`entries/${id}/protein`).json<Entry>(),
+      retryMacros: (id: number) => api.post(`entries/${id}/macros`).json<Entry>(),
       setLimit: (data: { limit: number; date: string }) =>
         api.put("limits", { json: data }).json<{ date: string; limit: number }>(),
       setBurn: (data: { burn: number; date: string }) =>
@@ -947,8 +1058,10 @@ HTML = """\
 
     // Whole grams read cleaner than "18.0"; a decimal only earns its place when
     // it carries information.
-    function fmtProtein(grams: number): string {
-      return Number.isInteger(grams) ? String(grams) : grams.toFixed(1);
+    // Carries its own unit so an unknown macro reads "–" rather than "–g".
+    function fmtGrams(grams: number | null | undefined): string {
+      if (grams == null) return "–";
+      return (Number.isInteger(grams) ? String(grams) : grams.toFixed(1)) + "g";
     }
 
     // Poll while any estimate is still in flight. Self-limiting: every pending
@@ -956,7 +1069,7 @@ HTML = """\
     function dayRefetchInterval(query: { state: { data?: DayData } }): number | false {
       const data = query.state.data;
       if (!data) return false;
-      return data.entries.some((e) => e.protein_state === "pending") ? 1500 : false;
+      return data.entries.some((e) => e.macros_state === "pending") ? 1500 : false;
     }
 
     // toISOString() is UTC, which picks the wrong day either side of midnight.
@@ -1426,58 +1539,83 @@ HTML = """\
       );
     }
 
-    // Protein is a best-effort estimate, so its slot in a row stays quiet: a
-    // figure when we have one, a retry affordance when we don't, nothing at all
+    // Macros are a best-effort estimate, so their slot in a row stays quiet: the
+    // figures when we have them, a retry affordance when we don't, nothing at all
     // when estimation is switched off.
-    function ProteinBadge({ entry, date }: { entry: Entry; date: string }) {
+    function MacroBadge({ entry, date }: { entry: Entry; date: string }) {
       const invalidate = useInvalidateDayAndStats(date);
 
       const retry = useMutation({
-        mutationFn: () => kcalClient.retryProtein(entry.id),
+        mutationFn: () => kcalClient.retryMacros(entry.id),
         onSuccess: invalidate,
       });
 
-      if (entry.protein_state === "skipped") return null;
+      if (entry.macros_state === "skipped") return null;
 
-      if (entry.protein_state === "pending" || retry.isPending) {
+      if (entry.macros_state === "pending" || retry.isPending) {
         return (
-          <span className="text-[11px] text-muted-foreground tabular-nums animate-pulse" title="Estimating protein">
+          <span className="text-[11px] text-muted-foreground tabular-nums animate-pulse" title="Estimating macros">
             ···
           </span>
         );
       }
 
-      if (entry.protein_state === "failed") {
+      if (entry.macros_state === "failed") {
         return (
           <button
             onClick={() => retry.mutate()}
-            title="Protein estimate unavailable — click to retry"
+            title="Macro estimate unavailable — click to retry"
             className="text-[11px] text-muted-foreground/60 hover:text-foreground transition-colors"
           >
-            ↻ P
+            ↻
           </button>
         );
       }
 
+      // An entry estimated before fat and fiber were tracked has no figure for
+      // them. Rather than invent a zero, show a dash and let a click fill it in.
+      const incomplete = MACROS.some((m) => entry.macros[m.key] == null);
+
+      // Protein leads because it is the figure most often being watched; fat and
+      // fiber stay muted so the line still scans at a glance.
       return (
-        <span className="text-[11px] tabular-nums text-muted-foreground">
-          <span className="font-bold text-foreground">{fmtProtein(entry.protein_g ?? 0)}</span>g P
+        <span
+          onClick={incomplete ? () => retry.mutate() : undefined}
+          title={incomplete ? "Estimated before fat and fiber were tracked — click to re-estimate" : undefined}
+          className={`text-[11px] tabular-nums text-muted-foreground ${incomplete ? "cursor-pointer hover:text-foreground" : ""}`}
+        >
+          {MACROS.map((m, i) => (
+            <span key={m.key}>
+              {i > 0 && <span className="mx-1 text-muted-foreground/40">·</span>}
+              <span className={i === 0 ? "font-bold text-foreground" : ""}>
+                {fmtGrams(entry.macros[m.key])}
+              </span>{" "}
+              {m.short}
+            </span>
+          ))}
+          {incomplete && <span className="ml-1">↻</span>}
         </span>
       );
     }
 
-    function ProteinTotal({ data }: { data: DayData }) {
+    function MacroTotals({ data }: { data: DayData }) {
       // Nothing to say before the first entry, or when estimation is switched off.
-      const tracked = data.entries.some((e) => e.protein_state !== "skipped");
+      const tracked = data.entries.some((e) => e.macros_state !== "skipped");
       if (!tracked) return null;
 
-      const partial = !data.protein_complete;
+      const partial = !data.macros_complete;
       return (
         <div
           className="text-xs tracking-wider mt-1 text-muted-foreground tabular-nums"
-          title={partial ? "Some entries have no protein estimate yet" : undefined}
+          title={partial ? "Some entries have no macro estimate yet" : undefined}
         >
-          <span className="font-bold text-foreground">{fmtProtein(data.total_protein_g)}</span>g PROTEIN{partial ? "*" : ""}
+          {MACROS.map((m, i) => (
+            <span key={m.key}>
+              {i > 0 && <span className="mx-1 text-muted-foreground/40">·</span>}
+              <span className="font-bold text-foreground">{fmtGrams(data.total_macros[m.key])}</span> {m.label}
+            </span>
+          ))}
+          {partial && "*"}
         </div>
       );
     }
@@ -1491,8 +1629,8 @@ HTML = """\
         onSuccess: invalidate,
       });
 
-      const items = entry.protein_items;
-      const canExpand = entry.protein_state === "ok" && items.length > 0;
+      const items = entry.macro_items;
+      const canExpand = entry.macros_state === "ok" && items.length > 0;
 
       return (
         <div className="group py-3 border-b border-muted last:border-b-0">
@@ -1508,29 +1646,46 @@ HTML = """\
                 <span className="text-[10px] text-muted-foreground shrink-0">{expanded ? "▾" : "▸"}</span>
               )}
             </div>
-            <div className="flex items-center gap-3 shrink-0">
-              <ProteinBadge entry={entry} date={date} />
-              <button
-                onClick={() => mutation.mutate()}
-                disabled={mutation.isPending}
-                className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
-              >
-                {mutation.isPending ? "..." : "DEL"}
-              </button>
-            </div>
+            <button
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending}
+              className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50 shrink-0"
+            >
+              {mutation.isPending ? "..." : "DEL"}
+            </button>
+          </div>
+
+          {/* Macros sit on their own line: three figures alongside the description
+              would squeeze it onto several lines. MACRO_INDENT aligns them under it. */}
+          <div className={`${MACRO_INDENT} empty:hidden`}>
+            <MacroBadge entry={entry} date={date} />
           </div>
 
           {canExpand && expanded && (
-            <div className="mt-2 ml-[6.5rem] mr-12 text-[11px] text-muted-foreground">
+            <div className="mt-2 ml-4 pl-3 border-l-2 border-muted text-[11px] text-muted-foreground">
+              <div className="flex gap-2 pb-1 text-muted-foreground/60 tracking-wider">
+                <span className="flex-1" />
+                {MACROS.map((m) => (
+                  <span key={m.key} className="w-12 text-right shrink-0">{m.short}</span>
+                ))}
+              </div>
               {items.map((item, i) => (
-                <div key={i} className="flex justify-between gap-4 py-0.5">
-                  <span className="break-words">{item.name}</span>
-                  <span className="tabular-nums shrink-0">{fmtProtein(item.protein_g)}g</span>
+                <div key={i} className="flex gap-2 py-0.5">
+                  <span className="flex-1 break-words">{item.name}</span>
+                  {MACROS.map((m) => (
+                    <span key={m.key} className="w-12 text-right tabular-nums shrink-0">
+                      {fmtGrams(item[`${m.key}_g`])}
+                    </span>
+                  ))}
                 </div>
               ))}
-              <div className="flex justify-between gap-4 py-0.5 border-t border-muted mt-1 pt-1 text-foreground">
-                <span className="tracking-wider">TOTAL</span>
-                <span className="tabular-nums font-bold">{fmtProtein(entry.protein_g ?? 0)}g</span>
+              <div className="flex gap-2 py-0.5 border-t border-muted mt-1 pt-1 text-foreground">
+                <span className="flex-1 tracking-wider">TOTAL</span>
+                {MACROS.map((m) => (
+                  <span key={m.key} className="w-12 text-right tabular-nums font-bold shrink-0">
+                    {fmtGrams(entry.macros[m.key])}
+                  </span>
+                ))}
               </div>
             </div>
           )}
@@ -1719,7 +1874,7 @@ HTML = """\
                     <div className={`text-xs tracking-wider mt-0.5 ${counterColor || "text-muted-foreground"}`}>
                       {isOver ? "⚠️ OVER LIMIT" : "KCAL"}
                     </div>
-                    <ProteinTotal data={data} />
+                    <MacroTotals data={data} />
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <LimitSetter currentLimit={data.limit} date={date} />
