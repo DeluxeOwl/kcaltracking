@@ -32,9 +32,22 @@ call fails, the entry keeps its calories and the row offers a retry. The model i
 
 All read-only endpoints. Base URL: `http://localhost:8765/api`
 
+## Marking a day
+
+A day can be marked so that it is scored by something other than its own entries:
+
+| Mark | Effect |
+| --- | --- |
+| `cheat` | The day's entries are ignored and it is scored as a flat 4000 kcal. For a blowout you know happened. |
+| `excluded` | The day is left out of every computation — the average, the day count, the cumulative weight change. For days you cannot account for at all (eating at someone else's table), where a guessed figure is worse than no figure. |
+| `null` | An ordinary day, scored from its entries. |
+
+Entries on a marked day are kept, just not counted. Clearing the mark brings
+them back.
+
 ### Get a day's data
 
-Returns entries, total kcal, limit, burn rate, and skip status for a given date.
+Returns entries, total kcal, limit, burn rate, and mark for a given date.
 
 ```bash
 curl http://localhost:8765/api/days/2026-07-16
@@ -48,7 +61,7 @@ curl http://localhost:8765/api/days/2026-07-16
   "total": 2465,
   "total_protein_g": 47.8,
   "protein_complete": true,
-  "skipped": false,
+  "mark": null,
   "entries": [
     {
       "id": 112, "kcal": 600, "description": "3 eggs, 2 slices of protein bread", "time": "12:34",
@@ -78,9 +91,21 @@ Re-runs estimation for one entry. Returns 503 if no API key is configured.
 curl -X POST http://localhost:8765/api/entries/112/protein
 ```
 
+### Mark a day
+
+Sets or clears a day's mark. Pass `null` to return the day to ordinary tracking.
+
+```bash
+curl -X PUT http://localhost:8765/api/day-mark \
+  -H 'Content-Type: application/json' \
+  -d '{"date": "2026-07-17", "mark": "excluded"}'
+```
+
 ### Average daily intake
 
-Returns the average kcal per day over the last N days (excluding today). Skipped (cheat) days count as 4000 kcal.
+Returns the average kcal per day over the last N days (excluding today). Cheat
+days count as 4000 kcal; excluded days are left out of both the sum and
+`days_counted`, and reported separately as `days_excluded`.
 
 ```bash
 curl http://localhost:8765/api/average/7
@@ -89,19 +114,20 @@ curl http://localhost:8765/api/average/7
 ```json
 {
   "days_requested": 7,
-  "days_counted": 7,
+  "days_counted": 6,
+  "days_excluded": 1,
   "average_kcal": 1944.4,
   "days": [
-    { "date": "2026-07-10", "total": 1710, "skipped": false },
-    { "date": "2026-07-11", "total": 2087, "skipped": false },
-    { "date": "2026-07-17", "total": 4000, "skipped": true }
+    { "date": "2026-07-10", "total": 1710, "mark": null },
+    { "date": "2026-07-11", "total": 2087, "mark": null },
+    { "date": "2026-07-17", "total": 4000, "mark": "cheat" }
   ]
 }
 ```
 
 ### Cumulative weight change
 
-Returns the total estimated weight change since the first tracked day, based on daily deficit/surplus against the configured burn rate (7.7 kcal per gram of fat). Skipped days count as 4000 kcal consumed.
+Returns the total estimated weight change since the first tracked day, based on daily deficit/surplus against the configured burn rate (7.7 kcal per gram of fat). Cheat days count as 4000 kcal consumed; excluded days contribute nothing and the running total steps over them.
 
 ```bash
 curl http://localhost:8765/api/cumulative
@@ -111,6 +137,7 @@ curl http://localhost:8765/api/cumulative
 {
   "total_grams": 1234.567,
   "days_counted": 19,
+  "days_excluded": 2,
   "days": [
     {
       "date": "2026-06-28",
@@ -118,7 +145,7 @@ curl http://localhost:8765/api/cumulative
       "burn": 2200,
       "deficit": 150,
       "grams": 19.481,
-      "skipped": false
+      "mark": null
     },
     {
       "date": "2026-07-17",
@@ -126,7 +153,7 @@ curl http://localhost:8765/api/cumulative
       "burn": 2200,
       "deficit": -1800,
       "grams": -233.766,
-      "skipped": true
+      "mark": "cheat"
     }
   ]
 }

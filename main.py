@@ -19,7 +19,7 @@ import sqlite3
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 import click
 import uvicorn
@@ -79,6 +79,26 @@ DescriptionStr = Annotated[str, Field(max_length=500), AfterValidator(_validate_
 
 
 # ── Domain ────────────────────────────────────────────────────────────
+
+# A day can be marked to override how its own entries score it.
+#   cheat    — entries are ignored and the day is scored as one fixed blowout,
+#              so a known binge still weighs on the numbers.
+#   excluded — the day is left out of every computation, as though it never
+#              happened. For days that genuinely cannot be accounted for (eating
+#              at someone else's table), where a guessed figure is worse than no
+#              figure at all.
+# An unmarked day is scored from its entries, which is the ordinary case.
+DayMark = Literal["cheat", "excluded"]
+DAY_CHEAT: DayMark = "cheat"
+DAY_EXCLUDED: DayMark = "excluded"
+
+# What one cheat day is scored as, in kcal.
+CHEAT_DAY_KCAL = 4000
+
+# Sorts below and above every real ISO date, so an unbounded date range needs no
+# separate query. ISO dates compare correctly as plain strings.
+_DATE_MIN = ""
+_DATE_MAX = "9999-12-31"
 
 # Macro estimates are best-effort: an entry is always saved and counted for kcal
 # even when the LLM is unavailable or returns nonsense. Protein, fat and fiber
@@ -155,10 +175,10 @@ class KcalRepository(ABC):
     def set_burn(self, entry_date: str, burn_kcal: int) -> None: ...
 
     @abstractmethod
-    def is_skipped(self, entry_date: str) -> bool: ...
+    def get_day_mark(self, entry_date: str) -> DayMark | None: ...
 
     @abstractmethod
-    def set_skipped(self, entry_date: str, skipped: bool) -> None: ...
+    def set_day_mark(self, entry_date: str, mark: DayMark | None) -> None: ...
 
     @abstractmethod
     def cumulative_weight_change(self) -> dict: ...
@@ -195,13 +215,41 @@ class SqliteKcalRepository(KcalRepository):
             "  burn_kcal INTEGER NOT NULL"
             ")"
         )
+        # Must run before the CREATE below, which would otherwise shadow the
+        # legacy table and strand every day already marked in it.
+        self._migrate_day_marks()
         self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS skipped_days ("
-            "  entry_date TEXT PRIMARY KEY"
+            "CREATE TABLE IF NOT EXISTS day_marks ("
+            "  entry_date TEXT PRIMARY KEY,"
+            f"  mark TEXT NOT NULL DEFAULT '{DAY_CHEAT}'"
             ")"
         )
         self._migrate_entries()
         self._conn.commit()
+
+    def _migrate_day_marks(self) -> None:
+        """Carry a pre-day_marks database forward.
+
+        The table began life as `skipped_days`, a bare list of dates that all
+        meant one thing: a cheat day. Renaming it keeps those rows, and the
+        `mark` column's default records exactly what they always meant.
+        """
+        tables = {
+            row[0]
+            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if "skipped_days" in tables and "day_marks" not in tables:
+            log.info("Migrating skipped_days to day_marks")
+            self._conn.execute("ALTER TABLE skipped_days RENAME TO day_marks")
+            tables.add("day_marks")
+
+        if "day_marks" not in tables:
+            return
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(day_marks)")}
+        if "mark" not in columns:
+            self._conn.execute(
+                f"ALTER TABLE day_marks ADD COLUMN mark TEXT NOT NULL DEFAULT '{DAY_CHEAT}'"
+            )
 
     def _migrate_entries(self) -> None:
         """Bring an existing database up to the current schema.
@@ -351,43 +399,50 @@ class SqliteKcalRepository(KcalRepository):
             )
             self._conn.commit()
 
-    def is_skipped(self, entry_date: str) -> bool:
+    def get_day_mark(self, entry_date: str) -> DayMark | None:
         row = self._conn.execute(
-            "SELECT 1 FROM skipped_days WHERE entry_date = ?",
+            "SELECT mark FROM day_marks WHERE entry_date = ?",
             (entry_date,),
         ).fetchone()
-        return row is not None
+        return row[0] if row else None
 
-    def set_skipped(self, entry_date: str, skipped: bool) -> None:
+    def set_day_mark(self, entry_date: str, mark: DayMark | None) -> None:
+        """Mark a day, or clear its mark with None to track it normally again."""
         with self._lock:
-            if skipped:
+            if mark is None:
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO skipped_days (entry_date) VALUES (?)",
+                    "DELETE FROM day_marks WHERE entry_date = ?",
                     (entry_date,),
                 )
             else:
                 self._conn.execute(
-                    "DELETE FROM skipped_days WHERE entry_date = ?",
-                    (entry_date,),
+                    "INSERT INTO day_marks (entry_date, mark) VALUES (?, ?) "
+                    "ON CONFLICT(entry_date) DO UPDATE SET mark = excluded.mark",
+                    (entry_date, mark),
                 )
             self._conn.commit()
+
+    def _day_marks(self, start: str = _DATE_MIN, end: str = _DATE_MAX) -> dict[str, str]:
+        """Every marked day in [start, end), keyed by date."""
+        rows = self._conn.execute(
+            "SELECT entry_date, mark FROM day_marks WHERE entry_date >= ? AND entry_date < ?",
+            (start, end),
+        ).fetchall()
+        return dict(rows)
 
     def average_intake(self, days: int) -> dict:
         """Compute average daily kcal intake over the last N days (excluding today).
 
-        Skipped (cheat) days count as 4000 kcal consumed.
+        Cheat days are scored as CHEAT_DAY_KCAL. Excluded days are left out of
+        both the sum and the day count, so they move the average neither way.
         """
         from datetime import timedelta
-        SKIPPED_DAY_KCAL = 4000
         today = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-        skipped_rows = self._conn.execute(
-            "SELECT entry_date FROM skipped_days "
-            "WHERE entry_date >= ? AND entry_date < ?",
-            (start_date, today),
-        ).fetchall()
-        skipped_set = {r[0] for r in skipped_rows}
+        marks = self._day_marks(start_date, today)
+        cheat_dates = {d for d, mark in marks.items() if mark == DAY_CHEAT}
+        excluded_dates = {d for d, mark in marks.items() if mark == DAY_EXCLUDED}
 
         rows = self._conn.execute(
             "SELECT entry_date, SUM(kcal) FROM entries "
@@ -396,16 +451,19 @@ class SqliteKcalRepository(KcalRepository):
             (start_date, today),
         ).fetchall()
 
-        # Merge entry dates and skipped dates so skipped days with no entries are included
+        # A cheat day counts even with no entries of its own, so it contributes a
+        # date. An excluded day only ever takes one away, entries or not.
         entry_totals = {entry_date: total for entry_date, total in rows}
-        all_dates = sorted(set(entry_totals.keys()) | skipped_set)
+        all_dates = sorted((set(entry_totals.keys()) | cheat_dates) - excluded_dates)
 
-        day_totals = []
-        for entry_date in all_dates:
-            if entry_date in skipped_set:
-                day_totals.append({"date": entry_date, "total": SKIPPED_DAY_KCAL, "skipped": True})
-            else:
-                day_totals.append({"date": entry_date, "total": entry_totals[entry_date], "skipped": False})
+        day_totals = [
+            {
+                "date": entry_date,
+                "total": CHEAT_DAY_KCAL if entry_date in cheat_dates else entry_totals[entry_date],
+                "mark": marks.get(entry_date),
+            }
+            for entry_date in all_dates
+        ]
 
         counted = len(day_totals)
         avg = round(sum(d["total"] for d in day_totals) / counted, 1) if counted > 0 else 0
@@ -413,6 +471,7 @@ class SqliteKcalRepository(KcalRepository):
         return {
             "days_requested": days,
             "days_counted": counted,
+            "days_excluded": len(excluded_dates),
             "average_kcal": avg,
             "days": day_totals,
         }
@@ -420,10 +479,10 @@ class SqliteKcalRepository(KcalRepository):
     def cumulative_weight_change(self) -> dict:
         """Compute cumulative weight change across all completed days.
 
-        Skipped (cheat) days count as 4000 kcal consumed.
+        Cheat days are scored as CHEAT_DAY_KCAL. Excluded days contribute no
+        deficit and no surplus: the running total simply steps over them.
         """
         KCAL_PER_GRAM_FAT = 7.7
-        SKIPPED_DAY_KCAL = 4000
 
         # Get all dates that have entries
         rows = self._conn.execute(
@@ -435,11 +494,9 @@ class SqliteKcalRepository(KcalRepository):
             "SELECT entry_date, burn_kcal FROM daily_burns ORDER BY entry_date"
         ).fetchall()
 
-        # Get skipped days
-        skipped_rows = self._conn.execute(
-            "SELECT entry_date FROM skipped_days"
-        ).fetchall()
-        skipped_set = {r[0] for r in skipped_rows}
+        marks = self._day_marks()
+        cheat_dates = {d for d, mark in marks.items() if mark == DAY_CHEAT}
+        excluded_dates = {d for d, mark in marks.items() if mark == DAY_EXCLUDED}
 
         def get_burn_for_date(date: str) -> int | None:
             """Replicate the <= lookup logic for burn rate."""
@@ -453,9 +510,10 @@ class SqliteKcalRepository(KcalRepository):
 
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # Merge entry dates and skipped dates so skipped days with no entries are included
+        # A cheat day counts even with no entries of its own, so it contributes a
+        # date. An excluded day only ever takes one away, entries or not.
         entry_totals = {entry_date: consumed for entry_date, consumed in rows}
-        all_dates = sorted(set(entry_totals.keys()) | skipped_set)
+        all_dates = sorted((set(entry_totals.keys()) | cheat_dates) - excluded_dates)
 
         total_grams = 0.0
         day_details = []
@@ -465,8 +523,8 @@ class SqliteKcalRepository(KcalRepository):
                 # Skip today and future days (not yet complete)
                 continue
 
-            if entry_date in skipped_set:
-                consumed = SKIPPED_DAY_KCAL
+            if entry_date in cheat_dates:
+                consumed = CHEAT_DAY_KCAL
             else:
                 consumed = entry_totals.get(entry_date, 0)
 
@@ -483,12 +541,13 @@ class SqliteKcalRepository(KcalRepository):
                 "burn": burn,
                 "deficit": deficit,
                 "grams": round(grams, 3),
-                "skipped": entry_date in skipped_set,
+                "mark": marks.get(entry_date),
             })
 
         return {
             "total_grams": round(total_grams, 3),
             "days_counted": len(day_details),
+            "days_excluded": len([d for d in excluded_dates if d < today]),
             "days": day_details,
         }
 
@@ -794,8 +853,9 @@ class SetBurnRequest(BaseModel):
     burn: int = Field(gt=0, le=100_000)
     date: DateStr
 
-class SetSkippedRequest(BaseModel):
-    skipped: bool
+class SetDayMarkRequest(BaseModel):
+    # null clears the mark and returns the day to ordinary tracking.
+    mark: DayMark | None = None
     date: DateStr
 
 class EstimateRequest(BaseModel):
@@ -842,7 +902,8 @@ class DayResponse(BaseModel):
     # False when at least one entry has no estimate, so the UI can flag the
     # macro totals as partial figures.
     macros_complete: bool
-    skipped: bool
+    # "cheat", "excluded", or null for an ordinary day scored from its entries.
+    mark: DayMark | None
     entries: list[EntryResponse]
 
 
@@ -871,7 +932,7 @@ async def get_day(day: str):
     limit = repo.get_limit(day)
     total = sum(e.kcal for e in entries)
     burn = repo.get_burn(day)
-    skipped = repo.is_skipped(day)
+    mark = repo.get_day_mark(day)
     return DayResponse(
         date=day,
         limit=limit,
@@ -888,7 +949,7 @@ async def get_day(day: str):
             e.macros_state == MACROS_OK and all(name in e.macros for name in MACRO_NAMES)
             for e in entries
         ),
-        skipped=skipped,
+        mark=mark,
         entries=[_entry_response(e) for e in entries],
     )
 
@@ -944,10 +1005,10 @@ async def set_burn(body: SetBurnRequest):
     return {"date": body.date, "burn": body.burn}
 
 
-@api.put("/skip", status_code=200)
-async def set_skipped(body: SetSkippedRequest):
-    repo.set_skipped(body.date, body.skipped)
-    return {"date": body.date, "skipped": body.skipped}
+@api.put("/day-mark", status_code=200)
+async def set_day_mark(body: SetDayMarkRequest):
+    repo.set_day_mark(body.date, body.mark)
+    return {"date": body.date, "mark": body.mark}
 
 
 @api.post("/estimate", response_model=EstimateResponse)
@@ -1117,6 +1178,11 @@ HTML = """\
 
     type MacrosState = "pending" | "ok" | "failed" | "skipped";
 
+    // How a day is scored, overriding its own entries. "cheat" scores it as one
+    // fixed blowout; "excluded" drops it from every computation. Null is an
+    // ordinary day, scored from what it contains.
+    type DayMark = "cheat" | "excluded";
+
     type Macros = Record<string, number>;
 
     interface MacroItem {
@@ -1143,7 +1209,7 @@ HTML = """\
       total: number;
       total_macros: Macros;
       macros_complete: boolean;
-      skipped: boolean;
+      mark: DayMark | null;
       entries: Entry[];
     }
 
@@ -1195,12 +1261,12 @@ HTML = """\
         api.put("limits", { json: data }).json<{ date: string; limit: number }>(),
       setBurn: (data: { burn: number; date: string }) =>
         api.put("burns", { json: data }).json<{ date: string; burn: number }>(),
-      setSkipped: (data: { skipped: boolean; date: string }) =>
-        api.put("skip", { json: data }).json<{ date: string; skipped: boolean }>(),
+      setDayMark: (data: { mark: DayMark | null; date: string }) =>
+        api.put("day-mark", { json: data }).json<{ date: string; mark: DayMark | null }>(),
       getCumulative: () =>
-        api.get("cumulative").json<{ total_grams: number; days_counted: number }>(),
+        api.get("cumulative").json<{ total_grams: number; days_counted: number; days_excluded: number }>(),
       getAverage: (days: number) =>
-        api.get(`average/${days}`).json<{ days_requested: number; days_counted: number; average_kcal: number }>(),
+        api.get(`average/${days}`).json<{ days_requested: number; days_counted: number; days_excluded: number; average_kcal: number }>(),
       estimate: (description: string) =>
         api.post("estimate", { json: { description } }).json<{
           kcal: number;
@@ -1261,7 +1327,7 @@ HTML = """\
 
     const KCAL_PER_GRAM_FAT = 7.7;
     // Must match the backend: a cheat day is scored as this many kcal.
-    const SKIPPED_DAY_KCAL = 4000;
+    const CHEAT_DAY_KCAL = 4000;
     // Must match the backend bound on /api/average/{days}.
     const MAX_AVERAGE_DAYS = 3650;
 
@@ -1874,7 +1940,10 @@ HTML = """\
         <div className="border-2 border-dashed border-foreground px-4 py-3 flex items-center justify-between">
           <div>
             <div className="text-[10px] tracking-wider text-muted-foreground">NET WEIGHT CHANGE SINCE START</div>
-            <div className="text-[10px] tracking-wider text-muted-foreground">{data.days_counted} DAYS COUNTED</div>
+            <div className="text-[10px] tracking-wider text-muted-foreground">
+              {data.days_counted} DAYS COUNTED
+              {data.days_excluded > 0 && ` · ${data.days_excluded} NOT COUNTED`}
+            </div>
           </div>
           <div className={`text-2xl font-bold tabular-nums tracking-tight ${colorClass}`}>
             {losing ? "↓" : gaining ? "↑" : ""} {display}
@@ -1950,32 +2019,75 @@ HTML = """\
 
           <div className="text-[10px] tracking-wider text-muted-foreground">
             {data.days_counted} OF {data.days_requested} DAYS WITH DATA
+            {data.days_excluded > 0 && ` · ${data.days_excluded} NOT COUNTED`}
           </div>
         </div>
       );
     }
 
-    function SkipDayToggle({ skipped, date }: { skipped: boolean; date: string }) {
+    // Each mark is its own toggle: pressing the active one clears it, pressing
+    // the other switches. A day is never both at once.
+    function DayMarkButtons({ mark, date }: { mark: DayMark | null; date: string }) {
       const invalidate = useInvalidateDayAndStats(date);
       const mutation = useMutation({
-        mutationFn: (newSkipped: boolean) => kcalClient.setSkipped({ skipped: newSkipped, date }),
+        mutationFn: (next: DayMark | null) => kcalClient.setDayMark({ mark: next, date }),
         onSuccess: invalidate,
       });
 
+      const toggle = (target: DayMark) => mutation.mutate(mark === target ? null : target);
+      const base =
+        "text-[10px] tracking-wider border-2 px-2 py-1.5 whitespace-nowrap transition-colors disabled:opacity-50";
+      const idle = "border-foreground text-muted-foreground hover:bg-foreground hover:text-background";
+
+      // inline-flex so the pair takes its alignment from whatever holds it:
+      // right, beside the limit and burn setters; left, under a marked day.
       return (
-        <button
-          onClick={() => mutation.mutate(!skipped)}
-          disabled={mutation.isPending}
-          className={`text-xs tracking-wider border-2 px-3 py-1.5 transition-colors disabled:opacity-50 ${
-            skipped
-              ? "border-yellow-500 bg-yellow-500 text-white hover:bg-transparent hover:text-yellow-500"
-              : "border-foreground text-muted-foreground hover:bg-foreground hover:text-background"
-          }`}
-        >
-          {mutation.isPending ? "..." : skipped ? "🍕 CHEAT DAY" : "SKIP DAY"}
-        </button>
+        <div className="inline-flex flex-col items-end gap-1">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => toggle("cheat")}
+              disabled={mutation.isPending}
+              className={`${base} ${
+                mark === "cheat"
+                  ? "border-yellow-500 bg-yellow-500 text-white hover:bg-transparent hover:text-yellow-500"
+                  : idle
+              }`}
+            >
+              🍕 CHEAT DAY
+            </button>
+            <button
+              onClick={() => toggle("excluded")}
+              disabled={mutation.isPending}
+              className={`${base} ${
+                mark === "excluded"
+                  ? "border-foreground bg-foreground text-background hover:bg-transparent hover:text-foreground"
+                  : idle
+              }`}
+            >
+              🚫 DON'T COUNT
+            </button>
+          </div>
+          <AppErrorMessage error={mutation.error} />
+        </div>
       );
     }
+
+    // A marked day replaces the counter entirely: its entries no longer decide
+    // anything, so showing a total against a limit would only mislead.
+    const MARKED_DAY_VIEW = {
+      cheat: {
+        headline: "🍕 CHEAT DAY",
+        detail: `COUNTS AS ${CHEAT_DAY_KCAL} KCAL`,
+        entriesLabel: `ENTRIES (IGNORED — DAY SCORED AS ${CHEAT_DAY_KCAL})`,
+        color: "text-yellow-500",
+      },
+      excluded: {
+        headline: "🚫 NOT COUNTED",
+        detail: "LEFT OUT OF THE AVERAGE AND WEIGHT CHANGE",
+        entriesLabel: "ENTRIES (KEPT, BUT NOT COUNTED ANYWHERE)",
+        color: "text-muted-foreground",
+      },
+    } as const;
 
     function DayView({ date }: { date: string }) {
       const { data } = useSuspenseQuery({
@@ -1984,25 +2096,25 @@ HTML = """\
         refetchInterval: dayRefetchInterval,
       });
 
-      if (data.skipped) {
+      if (data.mark) {
+        const view = MARKED_DAY_VIEW[data.mark];
         return (
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-4xl font-bold tracking-tighter text-yellow-500">
-                  🍕 CHEAT DAY
-                </div>
-                <div className="text-xs tracking-wider mt-0.5 text-yellow-500">
-                  COUNTS AS {SKIPPED_DAY_KCAL} KCAL
-                </div>
+            <div>
+              <div className={`text-3xl font-bold tracking-tighter ${view.color}`}>
+                {view.headline}
               </div>
-              <SkipDayToggle skipped={data.skipped} date={date} />
+              <div className={`text-xs tracking-wider mt-0.5 ${view.color}`}>
+                {view.detail}
+              </div>
             </div>
+
+            <DayMarkButtons mark={data.mark} date={date} />
 
             {data.entries.length > 0 && (
               <div className="border-t border-muted pt-1 opacity-50">
                 <div className="text-[10px] tracking-wider text-muted-foreground mb-2">
-                  ENTRIES (IGNORED — DAY SCORED AS {SKIPPED_DAY_KCAL})
+                  {view.entriesLabel}
                 </div>
                 {data.entries.map((entry) => (
                   <EntryItem key={entry.id} entry={entry} date={date} />
@@ -2035,7 +2147,7 @@ HTML = """\
                   <div className="flex flex-col items-end gap-1">
                     <LimitSetter currentLimit={data.limit} date={date} />
                     <BurnSetter currentBurn={data.burn} date={date} />
-                    <SkipDayToggle skipped={data.skipped} date={date} />
+                    <DayMarkButtons mark={data.mark} date={date} />
                   </div>
                 </div>
 
