@@ -1048,73 +1048,542 @@ HTML = """\
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#08090a" media="(prefers-color-scheme: dark)" />
   <title>KCAL</title>
+
+  <!-- Resolve the theme before first paint so there is no flash of the wrong
+       one. Everything downstream reads html[data-theme]. -->
+  <script>
+    (function () {
+      var KEY = "kcal.theme";
+      var root = document.documentElement;
+
+      function preferred() {
+        var stored = null;
+        try { stored = localStorage.getItem(KEY); } catch (e) { /* private mode */ }
+        if (stored === "light" || stored === "dark") return stored;
+        return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light";
+      }
+
+      root.dataset.theme = preferred();
+
+      // Colours cross-fade on a theme switch, but only for the switch itself —
+      // a permanent global transition would smear every other state change.
+      window.__kcalSetTheme = function (next) {
+        root.classList.add("theme-transition");
+        root.dataset.theme = next;
+        try { localStorage.setItem(KEY, next); } catch (e) { /* private mode */ }
+        clearTimeout(window.__kcalThemeTimer);
+        window.__kcalThemeTimer = setTimeout(function () {
+          root.classList.remove("theme-transition");
+        }, 240);
+      };
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"></script>
 
   <style type="text/tailwindcss">
-    @theme inline {
-      --font-sans: "IBM Plex Mono", "SF Mono", "Fira Code", ui-monospace, monospace;
-      --font-mono: "IBM Plex Mono", "SF Mono", "Fira Code", ui-monospace, monospace;
-      --color-background: var(--background);
-      --color-foreground: var(--foreground);
-      --color-primary: var(--primary);
-      --color-primary-foreground: var(--primary-foreground);
-      --color-secondary: var(--secondary);
-      --color-secondary-foreground: var(--secondary-foreground);
-      --color-muted: var(--muted);
-      --color-muted-foreground: var(--muted-foreground);
-      --color-accent: var(--accent);
-      --color-accent-foreground: var(--accent-foreground);
-      --color-destructive: var(--destructive);
-      --color-card: var(--card);
-      --color-card-foreground: var(--card-foreground);
-      --color-border: var(--border);
-      --color-input: var(--input);
-      --color-ring: var(--ring);
-      --radius-sm: 0px;
-    }
-    input[type="number"]::-webkit-inner-spin-button,
-    input[type="number"]::-webkit-outer-spin-button {
-      -webkit-appearance: none;
-      margin: 0;
-    }
-    input[type="number"] {
-      -moz-appearance: textfield;
-      --radius-md: 0px;
-      --radius-lg: 0px;
-      --radius-xl: 0px;
-      --radius-2xl: 0px;
-    }
+    /* ════════════════════════════════════════════════════════════════
+       DESIGN TOKENS
+       Every literal — colour, radius, size, shadow, duration — is declared
+       once here. Components never hardcode a value; they name a token. A
+       theme is then nothing but a different set of values for the same names.
+       ════════════════════════════════════════════════════════════════ */
+
     :root {
-      --background: #ffffff;
-      --foreground: #0a0a0a;
-      --primary: #0a0a0a;
-      --primary-foreground: #ffffff;
-      --secondary: #f0f0f0;
-      --secondary-foreground: #0a0a0a;
-      --muted: #f5f5f5;
-      --muted-foreground: #737373;
-      --accent: #f0f0f0;
-      --accent-foreground: #0a0a0a;
-      --destructive: #dc2626;
-      --card: #ffffff;
-      --card-foreground: #0a0a0a;
-      --border: #0a0a0a;
-      --input: #0a0a0a;
-      --ring: #0a0a0a;
-      --radius: 0px;
+      /* ── Typeface ─────────────────────────────────────────────── */
+      --font-family-ui: "Inter", ui-sans-serif, system-ui, -apple-system,
+        "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-family-mono: ui-monospace, "SF Mono", "JetBrains Mono",
+        "IBM Plex Mono", Menlo, monospace;
+
+      /* ── Type scale ───────────────────────────────────────────── */
+      --fs-micro: 0.625rem;   /* eyebrow labels */
+      --fs-mini: 0.6875rem;   /* dense metadata */
+      --fs-stat: 1.75rem;     /* card figures */
+      --fs-hero: 2.75rem;     /* the day's total */
+
+      --lh-micro: 1.4;
+      --lh-mini: 1.45;
+      --lh-stat: 1.1;
+      --lh-hero: 1;
+
+      --ls-label: 0.08em;     /* uppercase eyebrows */
+      --ls-title: 0.14em;     /* the app title */
+      --ls-figure: -0.02em;   /* big numerals pull tighter */
+
+      /* ── Radii ────────────────────────────────────────────────── */
+      --r-xs: 4px;
+      --r-sm: 6px;
+      --r-md: 8px;
+      --r-lg: 12px;
+      --r-xl: 16px;
+      --r-full: 9999px;
+
+      /* ── Metrics ──────────────────────────────────────────────── */
+      --app-width: 30rem;
+      --gutter: 1rem;
+      --card-pad: 1.25rem;
+      --control-h-sm: 1.75rem;
+      --control-h-md: 2rem;
+      --control-h-lg: 2.25rem;
+      --bar-h: 0.375rem;
+      --ring-w: 3px;
+      /* Aligns an entry's sub-lines under its description:
+         time (2.75rem) + gap (0.75rem) + kcal (3rem) + gap (0.75rem). */
+      --macro-indent: 7.25rem;
+
+      /* ── Motion ───────────────────────────────────────────────── */
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+      --dur-fast: 120ms;
+      --dur-med: 180ms;
+      --dur-slow: 320ms;
+
+      /* ── Elevation ────────────────────────────────────────────── */
+      --z-toggle: 30;
+      --z-overlay: 50;
     }
+
+    /* ── Light theme ────────────────────────────────────────────── */
+    :root,
+    :root[data-theme="light"] {
+      color-scheme: light;
+
+      --canvas: #f7f7f8;
+      --surface: #ffffff;
+      --raised: #f4f4f6;
+      --sunken: #ebebef;
+      --hover: rgba(9, 9, 11, 0.045);
+      --active: rgba(9, 9, 11, 0.08);
+
+      --fg: #16171a;
+      --fg-muted: #6a6e77;
+      --fg-subtle: #9b9fa8;
+      --on-accent: #ffffff;
+
+      --line: rgba(9, 9, 11, 0.09);
+      --line-strong: rgba(9, 9, 11, 0.17);
+
+      --accent: #5e6ad2;
+      --accent-hover: #4d59c4;
+      --accent-soft: rgba(94, 106, 210, 0.13);
+
+      --positive: #1f9d63;
+      --positive-soft: rgba(31, 157, 99, 0.12);
+      --caution: #a37211;
+      --caution-soft: rgba(242, 201, 76, 0.2);
+      --warn: #c4700d;
+      --warn-soft: rgba(242, 153, 74, 0.16);
+      --danger: #d13d3d;
+      --danger-soft: rgba(209, 61, 61, 0.11);
+
+      --overlay: rgba(16, 17, 19, 0.4);
+      --scrim-blur: 6px;
+
+      --elev-xs: 0 1px 2px rgba(9, 9, 11, 0.06);
+      --elev-sm: 0 1px 2px rgba(9, 9, 11, 0.05), 0 1px 3px rgba(9, 9, 11, 0.05);
+      --elev-md: 0 2px 4px rgba(9, 9, 11, 0.04), 0 6px 16px rgba(9, 9, 11, 0.07);
+      --elev-lg: 0 8px 20px rgba(9, 9, 11, 0.1), 0 24px 56px rgba(9, 9, 11, 0.14);
+    }
+
+    /* ── Dark theme ─────────────────────────────────────────────── */
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+
+      --canvas: #08090a;
+      --surface: #0f1011;
+      --raised: #161719;
+      --sunken: #1e1f22;
+      --hover: rgba(255, 255, 255, 0.055);
+      --active: rgba(255, 255, 255, 0.09);
+
+      --fg: #f7f8f8;
+      --fg-muted: #8a8f98;
+      --fg-subtle: #62666d;
+      --on-accent: #ffffff;
+
+      --line: rgba(255, 255, 255, 0.09);
+      --line-strong: rgba(255, 255, 255, 0.16);
+
+      --accent: #6e79d6;
+      --accent-hover: #838de0;
+      --accent-soft: rgba(110, 121, 214, 0.2);
+
+      --positive: #4cb782;
+      --positive-soft: rgba(76, 183, 130, 0.16);
+      --caution: #f2c94c;
+      --caution-soft: rgba(242, 201, 76, 0.16);
+      --warn: #f2994a;
+      --warn-soft: rgba(242, 153, 74, 0.16);
+      --danger: #eb5757;
+      --danger-soft: rgba(235, 87, 87, 0.15);
+
+      --overlay: rgba(0, 0, 0, 0.62);
+      --scrim-blur: 6px;
+
+      --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --elev-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+      --elev-md: 0 2px 4px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.45);
+      --elev-lg: 0 8px 20px rgba(0, 0, 0, 0.5), 0 24px 56px rgba(0, 0, 0, 0.6);
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+       TOKENS → TAILWIND
+       `inline` keeps the var() reference in the generated utility, so a
+       theme swap repaints without regenerating any CSS.
+       ════════════════════════════════════════════════════════════════ */
+
+    @theme inline {
+      --font-sans: var(--font-family-ui);
+      --font-mono: var(--font-family-mono);
+
+      --color-canvas: var(--canvas);
+      --color-surface: var(--surface);
+      --color-raised: var(--raised);
+      --color-sunken: var(--sunken);
+      --color-hover: var(--hover);
+      --color-active: var(--active);
+
+      --color-fg: var(--fg);
+      --color-fg-muted: var(--fg-muted);
+      --color-fg-subtle: var(--fg-subtle);
+      --color-on-accent: var(--on-accent);
+
+      --color-line: var(--line);
+      --color-line-strong: var(--line-strong);
+
+      --color-accent: var(--accent);
+      --color-accent-hover: var(--accent-hover);
+      --color-accent-soft: var(--accent-soft);
+
+      --color-positive: var(--positive);
+      --color-positive-soft: var(--positive-soft);
+      --color-caution: var(--caution);
+      --color-caution-soft: var(--caution-soft);
+      --color-warn: var(--warn);
+      --color-warn-soft: var(--warn-soft);
+      --color-danger: var(--danger);
+      --color-danger-soft: var(--danger-soft);
+
+      --radius-xs: var(--r-xs);
+      --radius-sm: var(--r-sm);
+      --radius-md: var(--r-md);
+      --radius-lg: var(--r-lg);
+      --radius-xl: var(--r-xl);
+
+      --shadow-xs: var(--elev-xs);
+      --shadow-sm: var(--elev-sm);
+      --shadow-md: var(--elev-md);
+      --shadow-lg: var(--elev-lg);
+
+      --text-micro: var(--fs-micro);
+      --text-micro--line-height: var(--lh-micro);
+      --text-mini: var(--fs-mini);
+      --text-mini--line-height: var(--lh-mini);
+      --text-stat: var(--fs-stat);
+      --text-stat--line-height: var(--lh-stat);
+      --text-hero: var(--fs-hero);
+      --text-hero--line-height: var(--lh-hero);
+
+      --tracking-label: var(--ls-label);
+      --tracking-title: var(--ls-title);
+      --tracking-figure: var(--ls-figure);
+
+      --ease-swift: var(--ease-out-expo);
+      --ease-std: var(--ease-standard);
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+       BASE
+       ════════════════════════════════════════════════════════════════ */
+
     @layer base {
-      * { @apply border-border; }
-      body { @apply bg-background text-foreground; }
+      * {
+        border-color: var(--line);
+      }
+
+      html {
+        -webkit-text-size-adjust: 100%;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      body {
+        background: var(--canvas);
+        color: var(--fg);
+        font-family: var(--font-family-ui);
+        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      ::selection {
+        background: var(--accent-soft);
+        color: var(--fg);
+      }
+
+      /* Native spinners make a kcal field look like a form, not a figure. */
+      input[type="number"]::-webkit-inner-spin-button,
+      input[type="number"]::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      input[type="number"] {
+        -moz-appearance: textfield;
+      }
+
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--line-strong) transparent;
+      }
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--line-strong);
+        border: 3px solid transparent;
+        border-radius: var(--r-full);
+        background-clip: content-box;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--fg-subtle);
+        border: 3px solid transparent;
+        background-clip: content-box;
+      }
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+       COMPONENT PRIMITIVES
+       Plain CSS over tokens, so every recurring shape — card, button,
+       field, pill — is defined once and stays consistent across themes.
+       ════════════════════════════════════════════════════════════════ */
+
+    @layer components {
+      .theme-transition,
+      .theme-transition *,
+      .theme-transition *::before,
+      .theme-transition *::after {
+        transition:
+          background-color var(--dur-med) var(--ease-standard),
+          border-color var(--dur-med) var(--ease-standard),
+          color var(--dur-med) var(--ease-standard),
+          box-shadow var(--dur-med) var(--ease-standard) !important;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: var(--elev-sm);
+      }
+
+      .panel {
+        background: var(--raised);
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+      }
+
+      .eyebrow {
+        font-size: var(--fs-micro);
+        line-height: var(--lh-micro);
+        letter-spacing: var(--ls-label);
+        text-transform: uppercase;
+        font-weight: 500;
+        color: var(--fg-subtle);
+      }
+
+      .figure {
+        font-variant-numeric: tabular-nums;
+        letter-spacing: var(--ls-figure);
+        font-weight: 600;
+      }
+
+      /* ── Buttons ────────────────────────────────────────────── */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.4rem;
+        flex-shrink: 0;
+        border: 1px solid transparent;
+        border-radius: var(--r-md);
+        font-family: inherit;
+        font-weight: 500;
+        white-space: nowrap;
+        cursor: pointer;
+        user-select: none;
+        transition:
+          background-color var(--dur-fast) var(--ease-standard),
+          border-color var(--dur-fast) var(--ease-standard),
+          color var(--dur-fast) var(--ease-standard),
+          opacity var(--dur-fast) var(--ease-standard),
+          transform var(--dur-fast) var(--ease-standard);
+      }
+      .btn:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 var(--ring-w) var(--accent-soft);
+      }
+      .btn:disabled {
+        opacity: 0.45;
+        pointer-events: none;
+      }
+      .btn:not(:disabled):active {
+        transform: scale(0.97);
+      }
+
+      .btn-sm { height: var(--control-h-sm); padding-inline: 0.55rem; font-size: var(--fs-mini); }
+      .btn-md { height: var(--control-h-md); padding-inline: 0.7rem; font-size: 0.75rem; }
+      .btn-lg { height: var(--control-h-lg); padding-inline: 0.9rem; font-size: 0.8125rem; }
+      .btn-icon { padding-inline: 0; aspect-ratio: 1 / 1; }
+
+      .btn-primary { background: var(--accent); color: var(--on-accent); }
+      .btn-primary:hover { background: var(--accent-hover); }
+
+      .btn-outline { background: var(--surface); border-color: var(--line); color: var(--fg); }
+      .btn-outline:hover { background: var(--hover); border-color: var(--line-strong); }
+
+      .btn-ghost { color: var(--fg-muted); }
+      .btn-ghost:hover { background: var(--hover); color: var(--fg); }
+
+      .btn-soft { background: var(--raised); color: var(--fg); border-color: var(--line); }
+      .btn-soft:hover { background: var(--sunken); }
+
+      .btn-danger { background: var(--danger-soft); color: var(--danger); }
+      .btn-danger:hover { background: var(--danger); color: var(--on-accent); }
+
+      /* ── Fields ─────────────────────────────────────────────── */
+      .field {
+        background: var(--raised);
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 0.8125rem;
+        padding: 0.45rem 0.65rem;
+        transition:
+          background-color var(--dur-fast) var(--ease-standard),
+          border-color var(--dur-fast) var(--ease-standard),
+          box-shadow var(--dur-fast) var(--ease-standard);
+      }
+      .field::placeholder { color: var(--fg-subtle); }
+      .field:focus {
+        outline: none;
+        background: var(--surface);
+        border-color: var(--accent);
+        box-shadow: 0 0 0 var(--ring-w) var(--accent-soft);
+      }
+      .field:disabled { opacity: 0.55; cursor: not-allowed; }
+      .field-sm { font-size: var(--fs-mini); padding: 0.25rem 0.45rem; }
+
+      /* ── Segmented control ──────────────────────────────────── */
+      .seg {
+        display: inline-flex;
+        gap: 2px;
+        padding: 2px;
+        background: var(--raised);
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+      }
+      .seg-item {
+        border-radius: var(--r-xs);
+        padding: 0.2rem 0.55rem;
+        font-size: var(--fs-mini);
+        font-weight: 500;
+        color: var(--fg-muted);
+        cursor: pointer;
+        transition:
+          background-color var(--dur-fast) var(--ease-standard),
+          color var(--dur-fast) var(--ease-standard);
+      }
+      .seg-item:hover { color: var(--fg); }
+      .seg-item[data-on="true"] {
+        background: var(--surface);
+        color: var(--fg);
+        box-shadow: var(--elev-xs);
+      }
+      .seg-item:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 var(--ring-w) var(--accent-soft);
+      }
+
+      /* ── Entry row ──────────────────────────────────────────── */
+      .row {
+        border-radius: var(--r-md);
+        transition: background-color var(--dur-fast) var(--ease-standard);
+      }
+      .row:hover { background: var(--hover); }
+
+      /* A hover-revealed control is unreachable on touch, so it only hides
+         where a real pointer exists. */
+      .row-action { opacity: 1; }
+      @media (hover: hover) and (pointer: fine) {
+        .row-action { opacity: 0; }
+        .row:hover .row-action,
+        .row-action:focus-visible { opacity: 1; }
+      }
+
+      /* ── Modal ──────────────────────────────────────────────── */
+      .scrim {
+        background: var(--overlay);
+        backdrop-filter: blur(var(--scrim-blur));
+        -webkit-backdrop-filter: blur(var(--scrim-blur));
+        animation: scrim-in var(--dur-med) var(--ease-standard);
+      }
+      .dialog {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--r-xl);
+        box-shadow: var(--elev-lg);
+        animation: dialog-in var(--dur-slow) var(--ease-out-expo);
+      }
+
+      kbd {
+        display: inline-block;
+        min-width: 1.25rem;
+        padding: 0.05rem 0.3rem;
+        border: 1px solid var(--line);
+        border-bottom-width: 2px;
+        border-radius: var(--r-xs);
+        background: var(--raised);
+        color: var(--fg-muted);
+        font-family: inherit;
+        font-size: var(--fs-micro);
+        text-align: center;
+      }
+    }
+
+    @keyframes scrim-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes dialog-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.985); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
     }
   </style>
-
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
   <script type="importmap">
   {
@@ -1124,7 +1593,6 @@ HTML = """\
       "react/jsx-dev-runtime": "https://esm.sh/react@19.2.8/jsx-dev-runtime",
       "react-dom": "https://esm.sh/react-dom@19.2.8?deps=react@19.2.8",
       "react-dom/client": "https://esm.sh/react-dom@19.2.8/client?deps=react@19.2.8",
-      "shadcn": "https://esm.sh/shadcn-ui-bundled@0.1.0/standalone?deps=react@19.2.8,react-dom@19.2.8",
       "@tanstack/react-query": "https://esm.sh/@tanstack/react-query@5.101.4?deps=react@19.2.8",
       "react-error-boundary": "https://esm.sh/react-error-boundary@6.1.2?deps=react@19.2.8",
       "ky": "https://esm.sh/ky@2.0.2",
@@ -1152,9 +1620,8 @@ HTML = """\
 </head>
 <body>
   <div id="root"></div>
-
   <script type="text/babel" data-type="module" data-presets="tsx-auto">
-    import { Suspense, useState, useEffect, useCallback } from "react";
+    import { Suspense, useState, useEffect, useCallback, useRef } from "react";
     import { createRoot } from "react-dom/client";
     import {
       QueryClient,
@@ -1166,13 +1633,6 @@ HTML = """\
     import { ErrorBoundary } from "react-error-boundary";
     import ky, { HTTPError } from "ky";
     import { useForm } from "react-hook-form";
-    import {
-      Button,
-      Input,
-      Separator,
-      Spinner,
-      Alert, AlertDescription,
-    } from "shadcn";
 
     // ── Types ────────────────────────────────────────────────────
 
@@ -1213,17 +1673,13 @@ HTML = """\
       entries: Entry[];
     }
 
-    // Display order and short labels. "FAT" and "FIB" are spelled out rather than
+    // Display order and short labels. "Fat" and "Fib" are spelled out rather than
     // both reduced to "F", which would be ambiguous.
     const MACROS = [
-      { key: "protein", short: "P", label: "PROTEIN" },
-      { key: "fat", short: "FAT", label: "FAT" },
-      { key: "fiber", short: "FIB", label: "FIBER" },
+      { key: "protein", short: "P", label: "Protein" },
+      { key: "fat", short: "Fat", label: "Fat" },
+      { key: "fiber", short: "Fib", label: "Fiber" },
     ] as const;
-
-    // Aligns a row's sub-lines under its description: time (w-11) + gap-3 +
-    // kcal (w-12) + gap-3.
-    const MACRO_INDENT = "ml-[7.25rem]";
 
     // ── Query keys ───────────────────────────────────────────────
 
@@ -1276,6 +1732,47 @@ HTML = """\
         }>(),
     } as const;
 
+    // ── Icons ────────────────────────────────────────────────────
+
+    // One shared frame keeps every glyph on the same optical weight and size.
+    function Icon({ path, size = 16, className = "" }: { path: string; size?: number; className?: string }) {
+      return (
+        <svg
+          viewBox="0 0 24 24"
+          width={size}
+          height={size}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.75}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          className={className}
+        >
+          <path d={path} />
+        </svg>
+      );
+    }
+
+    const ICONS = {
+      chevronLeft: "M15 18l-6-6 6-6",
+      chevronRight: "M9 6l6 6-6 6",
+      chevronDown: "M6 9l6 6 6-6",
+      plus: "M12 5v14M5 12h14",
+      close: "M18 6L6 18M6 6l12 12",
+      check: "M20 6L9 17l-5-5",
+      retry: "M20 11a8 8 0 1 0-2.3 5.6M20 5v6h-6",
+      sun: "M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4",
+      moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z",
+      sparkles: "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z",
+      trash: "M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2",
+      arrowDown: "M12 5v14M6 13l6 6 6-6",
+      arrowUp: "M12 19V5M6 11l6-6 6 6",
+      flame: "M12 22a7 7 0 0 0 7-7c0-5-4-6-4-10-3 1-4 3.5-4 5.5C10 9 9 8 9 6c-1.5 1.5-2 4-2 6a7 7 0 0 0 5 10z",
+      ban: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM5.6 5.6l12.8 12.8",
+      pizza: "M12 21L3 6c5.5-3 12.5-3 18 0l-9 15zM10 10h.01M13.5 14h.01",
+    } as const;
+
     // ── Helpers ──────────────────────────────────────────────────
 
     // Whole grams read cleaner than "18.0"; a decimal only earns its place when
@@ -1315,12 +1812,27 @@ HTML = """\
     function formatDate(dateStr: string): string {
       const d = new Date(dateStr + "T12:00:00");
       const today = todayStr();
-      const yesterday = shiftDate(today, -1);
-      const tomorrow = shiftDate(today, 1);
-      if (dateStr === today) return "TODAY";
-      if (dateStr === yesterday) return "YESTERDAY";
-      if (dateStr === tomorrow) return "TOMORROW";
-      return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }).toUpperCase();
+      if (dateStr === today) return "Today";
+      if (dateStr === shiftDate(today, -1)) return "Yesterday";
+      if (dateStr === shiftDate(today, 1)) return "Tomorrow";
+      return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    }
+
+    // Under a relative label ("Today") the calendar date is what's missing, so
+    // spell it out. Under a date that already reads as one, only the exact ISO
+    // form adds anything.
+    function dateSubtitle(dateStr: string): string {
+      const today = todayStr();
+      const isRelative =
+        dateStr === today ||
+        dateStr === shiftDate(today, -1) ||
+        dateStr === shiftDate(today, 1);
+      if (!isRelative) return dateStr;
+      return new Date(dateStr + "T12:00:00").toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      });
     }
 
     // ── Burn rate helpers ────────────────────────────────────────
@@ -1398,22 +1910,70 @@ HTML = """\
 
       if (retry) {
         return (
-          <div className="border-2 border-destructive p-3 my-3 flex items-center justify-between">
-            <span className="text-sm text-destructive">{message}</span>
-            <button
-              onClick={retry}
-              className="text-xs border-2 border-destructive text-destructive px-2 py-1 hover:bg-destructive hover:text-white transition-colors"
-            >
-              RETRY
+          <div className="my-3 flex items-center justify-between gap-3 rounded-md bg-danger-soft px-3 py-2.5">
+            <span className="text-xs text-danger">{message}</span>
+            <button onClick={retry} className="btn btn-sm btn-danger">
+              <Icon path={ICONS.retry} size={12} />
+              Retry
             </button>
           </div>
         );
       }
 
-      return <p className="text-sm text-destructive mt-1">{message}</p>;
+      return <p className="mt-1.5 text-mini text-danger">{message}</p>;
     }
 
-    // ── Components ───────────────────────────────────────────────
+    // ── Theme ────────────────────────────────────────────────────
+
+    type Theme = "light" | "dark";
+
+    // The pre-paint script in <head> owns the initial resolution and the write
+    // to localStorage, so React never has to guess and never double-applies.
+    function useTheme(): [Theme, (next: Theme) => void] {
+      const [theme, setTheme] = useState<Theme>(
+        () => (document.documentElement.dataset.theme as Theme) || "light",
+      );
+      const apply = useCallback((next: Theme) => {
+        window.__kcalSetTheme(next);
+        setTheme(next);
+      }, []);
+      return [theme, apply];
+    }
+
+    function ThemeToggle() {
+      const [theme, setTheme] = useTheme();
+      const isDark = theme === "dark";
+
+      return (
+        <button
+          onClick={() => setTheme(isDark ? "light" : "dark")}
+          title={isDark ? "Switch to light" : "Switch to dark"}
+          aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
+          className="btn btn-outline btn-icon btn-lg absolute right-4 top-4 sm:right-6 sm:top-6"
+          style={{ zIndex: "var(--z-toggle)" }}
+        >
+          {/* Both glyphs are mounted and cross-faded, so the swap has no flicker. */}
+          <span className="relative block h-4 w-4">
+            <span
+              className={`absolute inset-0 transition-all duration-300 ease-swift ${
+                isDark ? "scale-75 rotate-90 opacity-0" : "scale-100 rotate-0 opacity-100"
+              }`}
+            >
+              <Icon path={ICONS.sun} />
+            </span>
+            <span
+              className={`absolute inset-0 transition-all duration-300 ease-swift ${
+                isDark ? "scale-100 rotate-0 opacity-100" : "scale-75 -rotate-90 opacity-0"
+              }`}
+            >
+              <Icon path={ICONS.moon} />
+            </span>
+          </span>
+        </button>
+      );
+    }
+
+    // ── Status ───────────────────────────────────────────────────
 
     type Status = "ok" | "warning" | "danger" | "critical" | "over";
 
@@ -1429,19 +1989,19 @@ HTML = """\
     }
 
     const statusBarColor: Record<Status, string> = {
-      ok: "bg-foreground",
-      warning: "bg-yellow-500",
-      danger: "bg-orange-500",
-      critical: "bg-red-500",
-      over: "bg-red-600",
+      ok: "bg-accent",
+      warning: "bg-caution",
+      danger: "bg-warn",
+      critical: "bg-danger",
+      over: "bg-danger",
     };
 
     const statusTextColor: Record<Status, string> = {
       ok: "",
-      warning: "text-yellow-600",
-      danger: "text-orange-500",
-      critical: "text-red-500",
-      over: "text-red-600",
+      warning: "text-caution",
+      danger: "text-warn",
+      critical: "text-danger",
+      over: "text-danger",
     };
 
     function ProgressBar({ total, limit }: { total: number; limit: number | null }) {
@@ -1453,21 +2013,28 @@ HTML = """\
 
       return (
         <div className="space-y-2">
-          <div className="h-2 w-full bg-muted border border-foreground">
+          <div
+            className="w-full overflow-hidden rounded-full bg-sunken"
+            style={{ height: "var(--bar-h)" }}
+          >
             <div
-              className={`h-full transition-all duration-300 ${statusBarColor[status]}`}
+              className={`h-full rounded-full transition-all duration-500 ease-swift ${statusBarColor[status]}`}
               style={{ width: `${pct}%` }}
             />
           </div>
-          <div className={`flex justify-between text-xs tracking-wider ${statusTextColor[status]}`}>
-            <span>{total} KCAL CONSUMED</span>
-            <span className={over ? "font-bold" : ""}>
-              {over ? `⚠️ ${Math.abs(remaining)} OVER ⚠️` : `${remaining} LEFT`}
+          <div className="flex justify-between text-mini tabular-nums">
+            <span className="text-fg-muted">
+              <span className="font-medium text-fg">{total}</span> of {limit} kcal
+            </span>
+            <span className={over ? `font-semibold ${statusTextColor[status]}` : statusTextColor[status] || "text-fg-muted"}>
+              {over ? `${Math.abs(remaining)} over` : `${remaining} left`}
             </span>
           </div>
         </div>
       );
     }
+
+    // ── Limit / burn setters ─────────────────────────────────────
 
     function InlineSetter({ label, current, placeholder, onSave, isPending, error }: {
       label: string;
@@ -1500,44 +2067,41 @@ HTML = """\
 
       if (!editing) {
         return (
-          <button
-            onClick={() => setEditing(true)}
-            className="text-xs tracking-wider text-muted-foreground hover:text-foreground transition-colors border-b border-dashed border-muted-foreground hover:border-foreground"
-          >
-            {current !== null ? `${label}: ${current} KCAL` : `SET ${label}`}
+          <button onClick={() => setEditing(true)} className="btn btn-sm btn-ghost gap-1.5">
+            <span className="text-fg-subtle">{label}</span>
+            {current !== null ? (
+              <span className="font-semibold tabular-nums text-fg">{current}</span>
+            ) : (
+              <span className="text-fg-subtle">— set</span>
+            )}
           </button>
         );
       }
 
       return (
-        <form
-          onSubmit={handleSubmit(onSubmit)}
-          className="flex items-center gap-2"
-        >
-          <input
-            type="number"
-            autoFocus
-            {...register("value", { required: true, min: 1 })}
-            className="w-20 text-xs border-2 border-foreground px-2 py-1 bg-transparent font-mono focus:outline-none"
-            placeholder={placeholder}
-          />
-          <span className="text-xs tracking-wider">KCAL</span>
-          <button
-            type="submit"
-            disabled={isPending}
-            className="text-xs border-2 border-foreground px-2 py-1 hover:bg-foreground hover:text-background transition-colors disabled:opacity-50"
-          >
-            {isPending ? "..." : "SET"}
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditing(false)}
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
-            ✕
-          </button>
+        <div className="flex flex-col items-end">
+          <form onSubmit={handleSubmit(onSubmit)} className="flex items-center gap-1.5">
+            <span className="eyebrow">{label}</span>
+            <input
+              type="number"
+              autoFocus
+              {...register("value", { required: true, min: 1 })}
+              className="field field-sm w-16 text-center tabular-nums"
+              placeholder={placeholder}
+            />
+            <button type="submit" disabled={isPending} className="btn btn-sm btn-primary btn-icon">
+              <Icon path={ICONS.check} size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="btn btn-sm btn-ghost btn-icon"
+            >
+              <Icon path={ICONS.close} size={13} />
+            </button>
+          </form>
           <AppErrorMessage error={error} />
-        </form>
+        </div>
       );
     }
 
@@ -1549,7 +2113,7 @@ HTML = """\
       });
       return (
         <InlineSetter
-          label="LIMIT"
+          label="Limit"
           current={currentLimit}
           placeholder="1700"
           onSave={(v) => mutation.mutateAsync(v)}
@@ -1568,7 +2132,7 @@ HTML = """\
       });
       return (
         <InlineSetter
-          label="BURN"
+          label="Burn"
           current={currentBurn}
           placeholder="2200"
           onSave={(v) => mutation.mutateAsync(v)}
@@ -1577,6 +2141,8 @@ HTML = """\
         />
       );
     }
+
+    // ── Weight change ────────────────────────────────────────────
 
     function formatGrams(g: number): string {
       const abs = Math.abs(g);
@@ -1593,19 +2159,31 @@ HTML = """\
       return "neutral";
     }
 
+    const trendColor = {
+      losing: "text-positive",
+      gaining: "text-danger",
+      neutral: "text-fg-muted",
+    } as const;
+
+    function TrendArrow({ trend, size = 14 }: { trend: "losing" | "gaining" | "neutral"; size?: number }) {
+      if (trend === "neutral") return null;
+      return (
+        <Icon
+          path={trend === "losing" ? ICONS.arrowDown : ICONS.arrowUp}
+          size={size}
+          className="inline-block shrink-0"
+        />
+      );
+    }
+
     function ForecastRow({ label, grams }: { label: string; grams: number }) {
       const trend = gramsTrend(grams);
-      const colorClass =
-        trend === "losing" ? "text-emerald-600"
-        : trend === "gaining" ? "text-red-500"
-        : "text-muted-foreground";
-      const arrow = trend === "losing" ? "↓" : trend === "gaining" ? "↑" : "";
-
       return (
-        <div className="flex items-baseline justify-end gap-2">
-          <span className="text-[10px] tracking-wider text-muted-foreground">{label}</span>
-          <span className={`text-sm font-bold tabular-nums ${colorClass}`}>
-            {arrow}{formatGrams(grams)}
+        <div className="flex items-center justify-end gap-2">
+          <span className="text-micro text-fg-subtle">{label}</span>
+          <span className={`inline-flex items-center gap-0.5 text-xs font-semibold tabular-nums ${trendColor[trend]}`}>
+            <TrendArrow trend={trend} size={12} />
+            {formatGrams(grams)}
           </span>
         </div>
       );
@@ -1615,9 +2193,7 @@ HTML = """\
       const burn = useLiveBurn(burnRate, consumed, isToday);
       if (!burn) return null;
 
-      const losing = burn.grams > 0;
-      const gaining = burn.grams < 0;
-      const colorClass = losing ? "text-emerald-600" : gaining ? "text-red-500" : "";
+      const trend = gramsTrend(burn.grams);
 
       // Scenario A — you eat nothing else today. Independent of the limit.
       const stopTodayGrams = (burnRate! - consumed) / KCAL_PER_GRAM_FAT;
@@ -1637,65 +2213,54 @@ HTML = """\
       const monthGrams = baseTodayGrams + futureDayGrams * 29;
 
       return (
-        <div className="border-2 border-foreground p-4">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs tracking-wider text-muted-foreground">
-              {isToday ? "LIVE" : "FINAL"} WEIGHT CHANGE
-            </span>
-            <span className="text-xs tracking-wider text-muted-foreground tabular-nums">
-              {Math.round(burn.burnedSoFar)} BURNED
+        <div className="panel p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <span className="eyebrow">{isToday ? "Live weight change" : "Final weight change"}</span>
+            <span className="text-micro tabular-nums text-fg-subtle">
+              {Math.round(burn.burnedSoFar)} burned
             </span>
           </div>
 
           <div className="flex items-start justify-between gap-4">
             {/* Left: live counter */}
-            <div>
-              <div className={`text-3xl font-bold tabular-nums tracking-tight ${colorClass}`}>
-                {losing ? "↓" : gaining ? "↑" : ""} {Math.abs(burn.grams).toFixed(3)}g
+            <div className="min-w-0">
+              <div className={`figure flex items-center gap-1 text-stat ${trendColor[trend]}`}>
+                <TrendArrow trend={trend} size={20} />
+                {Math.abs(burn.grams).toFixed(3)}g
               </div>
-              <div className={`text-xs tracking-wider mt-1 ${colorClass || "text-muted-foreground"}`}>
-                {losing ? "LOSING" : gaining ? "GAINING" : "NEUTRAL"}
+              <div className={`mt-1 text-mini font-medium capitalize ${trendColor[trend]}`}>
+                {trend}
               </div>
-              <div className="text-[10px] tabular-nums text-muted-foreground mt-1">
-                DEFICIT {burn.deficit >= 0 ? "+" : ""}{Math.round(burn.deficit)} KCAL
+              <div className="mt-0.5 text-micro tabular-nums text-fg-subtle">
+                Deficit {burn.deficit >= 0 ? "+" : ""}{Math.round(burn.deficit)} kcal
               </div>
             </div>
 
             {/* Right: forecasts. Each block states its own assumption, so the
                 numbers are never a mix of two different scenarios. */}
             {isToday && (
-              <div className="text-right space-y-3 border-l border-muted pl-4">
+              <div className="space-y-3 border-l border-line pl-4 text-right">
                 <div className="space-y-1.5">
-                  <div className="text-[10px] tracking-wider text-muted-foreground">
-                    IF YOU STOP EATING NOW
-                  </div>
-                  <ForecastRow label="TODAY" grams={stopTodayGrams} />
+                  <div className="eyebrow">If you stop eating now</div>
+                  <ForecastRow label="Today" grams={stopTodayGrams} />
                 </div>
 
                 {limit !== null ? (
                   <div className="space-y-1.5">
-                    <div className="text-[10px] tracking-wider text-muted-foreground">
-                      IF YOU EAT {limit} KCAL/DAY
-                    </div>
-                    <ForecastRow label="TODAY" grams={limitTodayGrams} />
-                    <ForecastRow label="7 DAYS" grams={weekGrams} />
-                    <ForecastRow label="30 DAYS" grams={monthGrams} />
+                    <div className="eyebrow">If you eat {limit} kcal/day</div>
+                    <ForecastRow label="Today" grams={limitTodayGrams} />
+                    <ForecastRow label="7 days" grams={weekGrams} />
+                    <ForecastRow label="30 days" grams={monthGrams} />
                     {alreadyOverLimit && (
-                      <div className="text-[10px] tracking-wider text-muted-foreground">
-                        TODAY ALREADY OVER LIMIT
-                      </div>
+                      <div className="text-micro text-fg-subtle">Today already over limit</div>
                     )}
                   </div>
                 ) : (
                   <div className="space-y-1.5">
-                    <div className="text-[10px] tracking-wider text-muted-foreground">
-                      IF EVERY DAY LIKE TODAY
-                    </div>
-                    <ForecastRow label="7 DAYS" grams={weekGrams} />
-                    <ForecastRow label="30 DAYS" grams={monthGrams} />
-                    <div className="text-[10px] tracking-wider text-muted-foreground">
-                      SET A LIMIT FOR A REAL FORECAST
-                    </div>
+                    <div className="eyebrow">If every day like today</div>
+                    <ForecastRow label="7 days" grams={weekGrams} />
+                    <ForecastRow label="30 days" grams={monthGrams} />
+                    <div className="text-micro text-fg-subtle">Set a limit for a real forecast</div>
                   </div>
                 )}
               </div>
@@ -1704,6 +2269,8 @@ HTML = """\
         </div>
       );
     }
+
+    // ── Add entry ────────────────────────────────────────────────
 
     interface AddEntryFields {
       kcal: string;
@@ -1733,33 +2300,36 @@ HTML = """\
 
       return (
         <div>
-          <form onSubmit={handleSubmit(onSubmit)} className="flex gap-0">
+          <form onSubmit={handleSubmit(onSubmit)} className="flex items-center gap-2">
             <input
               type="number"
               placeholder="kcal"
               {...register("kcal", { required: true, min: 1 })}
               disabled={mutation.isPending}
-              className="w-20 border-2 border-foreground px-3 py-2.5 text-sm bg-transparent font-mono focus:outline-none placeholder:text-muted-foreground"
+              className="field w-[4.5rem] shrink-0 text-center tabular-nums"
             />
             <input
               type="text"
-              placeholder="description"
+              placeholder="What did you eat?"
               {...register("description", { required: true, validate: (v) => v.trim().length > 0 })}
               disabled={mutation.isPending}
-              className="flex-1 border-2 border-l-0 border-foreground px-3 py-2.5 text-sm bg-transparent font-mono focus:outline-none placeholder:text-muted-foreground"
+              className="field min-w-0 flex-1"
             />
             <button
               type="submit"
               disabled={mutation.isPending || !isValid}
-              className="border-2 border-l-0 border-foreground px-4 py-2.5 text-sm font-bold bg-foreground text-background hover:bg-transparent hover:text-foreground transition-colors disabled:opacity-30"
+              aria-label="Add entry"
+              className="btn btn-primary btn-icon btn-lg"
             >
-              {mutation.isPending ? "..." : "+"}
+              <Icon path={ICONS.plus} size={16} />
             </button>
           </form>
           <AppErrorMessage error={mutation.error} />
         </div>
       );
     }
+
+    // ── Macros ───────────────────────────────────────────────────
 
     // Macros are a best-effort estimate, so their slot in a row stays quiet: the
     // figures when we have them, a retry affordance when we don't, nothing at all
@@ -1776,8 +2346,10 @@ HTML = """\
 
       if (entry.macros_state === "pending" || retry.isPending) {
         return (
-          <span className="text-[11px] text-muted-foreground tabular-nums animate-pulse" title="Estimating macros">
-            ···
+          <span className="inline-flex items-center gap-1 text-mini text-fg-subtle" title="Estimating macros">
+            <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-current" />
+            <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:150ms]" />
+            <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:300ms]" />
           </span>
         );
       }
@@ -1787,9 +2359,10 @@ HTML = """\
           <button
             onClick={() => retry.mutate()}
             title="Macro estimate unavailable — click to retry"
-            className="text-[11px] text-muted-foreground/60 hover:text-foreground transition-colors"
+            className="btn btn-sm btn-ghost -ml-1.5 gap-1 text-fg-subtle"
           >
-            ↻
+            <Icon path={ICONS.retry} size={11} />
+            Retry
           </button>
         );
       }
@@ -1804,18 +2377,18 @@ HTML = """\
         <span
           onClick={incomplete ? () => retry.mutate() : undefined}
           title={incomplete ? "Estimated before fat and fiber were tracked — click to re-estimate" : undefined}
-          className={`text-[11px] tabular-nums text-muted-foreground ${incomplete ? "cursor-pointer hover:text-foreground" : ""}`}
+          className={`inline-flex items-center gap-1.5 text-mini tabular-nums text-fg-subtle ${incomplete ? "cursor-pointer hover:text-fg" : ""}`}
         >
           {MACROS.map((m, i) => (
-            <span key={m.key}>
-              {i > 0 && <span className="mx-1 text-muted-foreground/40">·</span>}
-              <span className={i === 0 ? "font-bold text-foreground" : ""}>
+            <span key={m.key} className="inline-flex items-center gap-1">
+              {i > 0 && <span className="text-line-strong">·</span>}
+              <span className={i === 0 ? "font-semibold text-fg-muted" : ""}>
                 {fmtGrams(entry.macros[m.key])}
-              </span>{" "}
-              {m.short}
+              </span>
+              <span>{m.short}</span>
             </span>
           ))}
-          {incomplete && <span className="ml-1">↻</span>}
+          {incomplete && <Icon path={ICONS.retry} size={11} />}
         </span>
       );
     }
@@ -1828,19 +2401,22 @@ HTML = """\
       const partial = !data.macros_complete;
       return (
         <div
-          className="text-xs tracking-wider mt-1 text-muted-foreground tabular-nums"
+          className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-mini tabular-nums text-fg-muted"
           title={partial ? "Some entries have no macro estimate yet" : undefined}
         >
           {MACROS.map((m, i) => (
-            <span key={m.key}>
-              {i > 0 && <span className="mx-1 text-muted-foreground/40">·</span>}
-              <span className="font-bold text-foreground">{fmtGrams(data.total_macros[m.key])}</span> {m.label}
+            <span key={m.key} className="inline-flex items-center gap-1">
+              {i > 0 && <span className="text-line-strong">·</span>}
+              <span className="font-semibold text-fg">{fmtGrams(data.total_macros[m.key])}</span>
+              <span>{m.label.toLowerCase()}</span>
             </span>
           ))}
-          {partial && "*"}
+          {partial && <span className="text-fg-subtle">*</span>}
         </div>
       );
     }
+
+    // ── Entry row ────────────────────────────────────────────────
 
     function EntryItem({ entry, date }: { entry: Entry; date: string }) {
       const invalidate = useInvalidateDayAndStats(date);
@@ -1855,56 +2431,66 @@ HTML = """\
       const canExpand = entry.macros_state === "ok" && items.length > 0;
 
       return (
-        <div className="group py-3 border-b border-muted last:border-b-0">
-          <div className="flex items-center justify-between gap-3">
+        <div className="row -mx-2 px-2 py-2">
+          <div className="flex items-center justify-between gap-2">
             <div
               onClick={canExpand ? () => setExpanded((v) => !v) : undefined}
-              className={`flex items-baseline gap-3 min-w-0 ${canExpand ? "cursor-pointer" : ""}`}
+              className={`flex min-w-0 items-baseline gap-3 ${canExpand ? "cursor-pointer" : ""}`}
             >
-              <span className="text-[11px] tabular-nums text-muted-foreground w-11 shrink-0">{entry.time}</span>
-              <span className="text-sm font-bold tabular-nums w-12 text-right shrink-0">{entry.kcal}</span>
-              <span className="text-sm break-words">{entry.description}</span>
+              <span className="w-11 shrink-0 text-mini tabular-nums text-fg-subtle">{entry.time}</span>
+              <span className="w-12 shrink-0 text-right text-sm font-semibold tabular-nums text-fg">
+                {entry.kcal}
+              </span>
+              <span className="break-words text-sm text-fg">{entry.description}</span>
               {canExpand && (
-                <span className="text-[10px] text-muted-foreground shrink-0">{expanded ? "▾" : "▸"}</span>
+                <span className="shrink-0 self-center text-fg-subtle">
+                  <Icon
+                    path={ICONS.chevronDown}
+                    size={12}
+                    className={`transition-transform duration-200 ease-std ${expanded ? "rotate-180" : ""}`}
+                  />
+                </span>
               )}
             </div>
             <button
               onClick={() => mutation.mutate()}
               disabled={mutation.isPending}
-              className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50 shrink-0"
+              aria-label="Delete entry"
+              className="btn btn-sm btn-ghost btn-icon row-action shrink-0 transition-opacity hover:text-danger"
             >
-              {mutation.isPending ? "..." : "DEL"}
+              <Icon path={ICONS.trash} size={13} />
             </button>
           </div>
 
           {/* Macros sit on their own line: three figures alongside the description
-              would squeeze it onto several lines. MACRO_INDENT aligns them under it. */}
-          <div className={`${MACRO_INDENT} empty:hidden`}>
+              would squeeze it onto several lines, and --macro-indent lines them up
+              under it. */}
+          <div className="empty:hidden" style={{ marginLeft: "var(--macro-indent)" }}>
             <MacroBadge entry={entry} date={date} />
           </div>
 
           {canExpand && expanded && (
-            <div className="mt-2 ml-4 pl-3 border-l-2 border-muted text-[11px] text-muted-foreground">
-              <div className="flex gap-2 pb-1 text-muted-foreground/60 tracking-wider">
+            <div className="mt-2 ml-4 border-l border-line pl-3 text-mini text-fg-muted">
+              <div className="flex gap-2 pb-1 text-fg-subtle">
                 <span className="flex-1" />
                 {MACROS.map((m) => (
-                  <span key={m.key} className="w-12 text-right shrink-0">{m.short}</span>
+                  <span key={m.key} className="w-12 shrink-0 text-right">{m.short}</span>
                 ))}
               </div>
               {items.map((item, i) => (
                 <div key={i} className="flex gap-2 py-0.5">
                   <span className="flex-1 break-words">{item.name}</span>
                   {MACROS.map((m) => (
-                    <span key={m.key} className="w-12 text-right tabular-nums shrink-0">
+                    <span key={m.key} className="w-12 shrink-0 text-right tabular-nums">
                       {fmtGrams(item[`${m.key}_g`])}
                     </span>
                   ))}
                 </div>
               ))}
-              <div className="flex gap-2 py-0.5 border-t border-muted mt-1 pt-1 text-foreground">
-                <span className="flex-1 tracking-wider">TOTAL</span>
+              <div className="mt-1 flex gap-2 border-t border-line pt-1 text-fg">
+                <span className="flex-1 font-medium">Total</span>
                 {MACROS.map((m) => (
-                  <span key={m.key} className="w-12 text-right tabular-nums font-bold shrink-0">
+                  <span key={m.key} className="w-12 shrink-0 text-right font-semibold tabular-nums">
                     {fmtGrams(entry.macros[m.key])}
                   </span>
                 ))}
@@ -1915,6 +2501,8 @@ HTML = """\
       );
     }
 
+    // ── Stats cards ──────────────────────────────────────────────
+
     function CumulativeWeightChange() {
       const { data } = useSuspenseQuery({
         queryKey: statsKeys.cumulative,
@@ -1924,29 +2512,22 @@ HTML = """\
 
       if (data.days_counted === 0) return null;
 
-      const losing = data.total_grams > 0;
-      const gaining = data.total_grams < 0;
-      const colorClass = losing ? "text-emerald-600" : gaining ? "text-red-500" : "text-muted-foreground";
-
+      const trend = gramsTrend(data.total_grams);
       const absGrams = Math.abs(data.total_grams);
-      let display: string;
-      if (absGrams >= 1000) {
-        display = (absGrams / 1000).toFixed(2) + "kg";
-      } else {
-        display = absGrams.toFixed(1) + "g";
-      }
+      const display = absGrams >= 1000 ? (absGrams / 1000).toFixed(2) + "kg" : absGrams.toFixed(1) + "g";
 
       return (
-        <div className="border-2 border-dashed border-foreground px-4 py-3 flex items-center justify-between">
-          <div>
-            <div className="text-[10px] tracking-wider text-muted-foreground">NET WEIGHT CHANGE SINCE START</div>
-            <div className="text-[10px] tracking-wider text-muted-foreground">
-              {data.days_counted} DAYS COUNTED
-              {data.days_excluded > 0 && ` · ${data.days_excluded} NOT COUNTED`}
+        <div className="flex items-center justify-between gap-4 px-5 py-4">
+          <div className="min-w-0">
+            <div className="eyebrow">Net weight change</div>
+            <div className="mt-1 text-mini text-fg-muted">
+              {data.days_counted} days counted
+              {data.days_excluded > 0 && ` · ${data.days_excluded} skipped`}
             </div>
           </div>
-          <div className={`text-2xl font-bold tabular-nums tracking-tight ${colorClass}`}>
-            {losing ? "↓" : gaining ? "↑" : ""} {display}
+          <div className={`figure flex shrink-0 items-center gap-1 text-stat ${trendColor[trend]}`}>
+            <TrendArrow trend={trend} size={18} />
+            {display}
           </div>
         </div>
       );
@@ -1968,28 +2549,36 @@ HTML = """\
       // switching to 14/30/custom, where older data may exist.
 
       return (
-        <div className="px-4 py-3 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[10px] tracking-wider text-muted-foreground">AVG DAILY INTAKE</div>
-            <div className="text-2xl font-bold tabular-nums tracking-tight">
-              {data.days_counted > 0 ? `${Math.round(data.average_kcal)} KCAL` : "—"}
+        <div className="space-y-3 px-5 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="eyebrow">Average daily intake</div>
+              <div className="mt-1 text-mini text-fg-muted">
+                {data.days_counted} of {data.days_requested} days with data
+                {data.days_excluded > 0 && ` · ${data.days_excluded} skipped`}
+              </div>
+            </div>
+            <div className="figure shrink-0 text-stat text-fg">
+              {data.days_counted > 0 ? Math.round(data.average_kcal) : "—"}
+              {data.days_counted > 0 && (
+                <span className="ml-1 text-mini font-medium tracking-normal text-fg-subtle">kcal</span>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            {presets.map((d) => (
-              <button
-                key={d}
-                onClick={() => { setSelectedDays(d); setIsCustom(false); setCustomInput(""); }}
-                className={`text-[10px] tracking-wider px-2.5 py-1 border-2 transition-colors ${
-                  selectedDays === d && !isCustom
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-foreground text-foreground hover:bg-foreground hover:text-background"
-                }`}
-              >
-                {d}D
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="seg">
+              {presets.map((d) => (
+                <button
+                  key={d}
+                  onClick={() => { setSelectedDays(d); setIsCustom(false); setCustomInput(""); }}
+                  data-on={selectedDays === d && !isCustom}
+                  className="seg-item"
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
 
             <form
               onSubmit={(e) => {
@@ -1997,7 +2586,7 @@ HTML = """\
                 const val = parseInt(customInput);
                 if (val > 0) { setSelectedDays(Math.min(val, MAX_AVERAGE_DAYS)); setIsCustom(true); }
               }}
-              className="flex items-center gap-1 ml-auto"
+              className="ml-auto flex items-center gap-1.5"
             >
               <input
                 type="number"
@@ -2006,24 +2595,17 @@ HTML = """\
                 placeholder="N"
                 min={1}
                 max={MAX_AVERAGE_DAYS}
-                className="w-12 text-[10px] border-2 border-foreground px-1.5 py-1 bg-transparent font-mono focus:outline-none placeholder:text-muted-foreground text-center"
+                aria-label="Custom day range"
+                className="field field-sm w-12 text-center tabular-nums"
               />
-              <button
-                type="submit"
-                className="text-[10px] tracking-wider border-2 border-foreground px-2 py-1 hover:bg-foreground hover:text-background transition-colors"
-              >
-                GO
-              </button>
+              <button type="submit" className="btn btn-sm btn-soft">Go</button>
             </form>
-          </div>
-
-          <div className="text-[10px] tracking-wider text-muted-foreground">
-            {data.days_counted} OF {data.days_requested} DAYS WITH DATA
-            {data.days_excluded > 0 && ` · ${data.days_excluded} NOT COUNTED`}
           </div>
         </div>
       );
     }
+
+    // ── Day marks ────────────────────────────────────────────────
 
     // Each mark is its own toggle: pressing the active one clears it, pressing
     // the other switches. A day is never both at once.
@@ -2035,36 +2617,31 @@ HTML = """\
       });
 
       const toggle = (target: DayMark) => mutation.mutate(mark === target ? null : target);
-      const base =
-        "text-[10px] tracking-wider border-2 px-2 py-1.5 whitespace-nowrap transition-colors disabled:opacity-50";
-      const idle = "border-foreground text-muted-foreground hover:bg-foreground hover:text-background";
 
       // inline-flex so the pair takes its alignment from whatever holds it:
       // right, beside the limit and burn setters; left, under a marked day.
       return (
         <div className="inline-flex flex-col items-end gap-1">
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             <button
               onClick={() => toggle("cheat")}
               disabled={mutation.isPending}
-              className={`${base} ${
-                mark === "cheat"
-                  ? "border-yellow-500 bg-yellow-500 text-white hover:bg-transparent hover:text-yellow-500"
-                  : idle
+              className={`btn btn-sm gap-1.5 ${
+                mark === "cheat" ? "bg-caution-soft text-caution" : "btn-ghost"
               }`}
             >
-              🍕 CHEAT DAY
+              <Icon path={ICONS.pizza} size={12} />
+              Cheat day
             </button>
             <button
               onClick={() => toggle("excluded")}
               disabled={mutation.isPending}
-              className={`${base} ${
-                mark === "excluded"
-                  ? "border-foreground bg-foreground text-background hover:bg-transparent hover:text-foreground"
-                  : idle
+              className={`btn btn-sm gap-1.5 ${
+                mark === "excluded" ? "bg-hover text-fg" : "btn-ghost"
               }`}
             >
-              🚫 DON'T COUNT
+              <Icon path={ICONS.ban} size={12} />
+              Skip day
             </button>
           </div>
           <AppErrorMessage error={mutation.error} />
@@ -2076,18 +2653,24 @@ HTML = """\
     // anything, so showing a total against a limit would only mislead.
     const MARKED_DAY_VIEW = {
       cheat: {
-        headline: "🍕 CHEAT DAY",
-        detail: `COUNTS AS ${CHEAT_DAY_KCAL} KCAL`,
-        entriesLabel: `ENTRIES (IGNORED — DAY SCORED AS ${CHEAT_DAY_KCAL})`,
-        color: "text-yellow-500",
+        headline: "Cheat day",
+        icon: ICONS.pizza,
+        detail: `Counts as ${CHEAT_DAY_KCAL} kcal`,
+        entriesLabel: `Entries — ignored, day scored as ${CHEAT_DAY_KCAL}`,
+        color: "text-caution",
+        soft: "bg-caution-soft",
       },
       excluded: {
-        headline: "🚫 NOT COUNTED",
-        detail: "LEFT OUT OF THE AVERAGE AND WEIGHT CHANGE",
-        entriesLabel: "ENTRIES (KEPT, BUT NOT COUNTED ANYWHERE)",
-        color: "text-muted-foreground",
+        headline: "Not counted",
+        icon: ICONS.ban,
+        detail: "Left out of the average and the weight change",
+        entriesLabel: "Entries — kept, but not counted anywhere",
+        color: "text-fg-muted",
+        soft: "bg-hover",
       },
     } as const;
+
+    // ── Day view ─────────────────────────────────────────────────
 
     function DayView({ date }: { date: string }) {
       const { data } = useSuspenseQuery({
@@ -2099,23 +2682,24 @@ HTML = """\
       if (data.mark) {
         const view = MARKED_DAY_VIEW[data.mark];
         return (
-          <div className="space-y-6">
-            <div>
-              <div className={`text-3xl font-bold tracking-tighter ${view.color}`}>
-                {view.headline}
-              </div>
-              <div className={`text-xs tracking-wider mt-0.5 ${view.color}`}>
-                {view.detail}
+          <div className="space-y-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${view.soft} ${view.color}`}>
+                  <Icon path={view.icon} size={18} />
+                </span>
+                <div>
+                  <div className={`text-lg font-semibold ${view.color}`}>{view.headline}</div>
+                  <div className="mt-0.5 text-mini text-fg-muted">{view.detail}</div>
+                </div>
               </div>
             </div>
 
             <DayMarkButtons mark={data.mark} date={date} />
 
             {data.entries.length > 0 && (
-              <div className="border-t border-muted pt-1 opacity-50">
-                <div className="text-[10px] tracking-wider text-muted-foreground mb-2">
-                  {view.entriesLabel}
-                </div>
+              <div className="border-t border-line pt-3 opacity-60">
+                <div className="eyebrow mb-1">{view.entriesLabel}</div>
                 {data.entries.map((entry) => (
                   <EntryItem key={entry.id} entry={entry} date={date} />
                 ))}
@@ -2125,49 +2709,52 @@ HTML = """\
         );
       }
 
+      const status = getStatus(data.total, data.limit);
+      const counterColor = statusTextColor[status];
+      const isOver = status === "over";
+      const isCurrentDay = date === todayStr();
+
       return (
-        <div className="space-y-6">
-          {(() => {
-            const status = getStatus(data.total, data.limit);
-            const counterColor = statusTextColor[status];
-            const isOver = status === "over";
-            const isCurrentDay = date === todayStr();
-            return (
-              <>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className={`text-4xl font-bold tabular-nums tracking-tighter ${counterColor}`}>
-                      {isOver && "🔥 "}{data.total}{isOver && " 🔥"}
-                    </div>
-                    <div className={`text-xs tracking-wider mt-0.5 ${counterColor || "text-muted-foreground"}`}>
-                      {isOver ? "⚠️ OVER LIMIT" : "KCAL"}
-                    </div>
-                    <MacroTotals data={data} />
-                  </div>
-                  <div className="flex flex-col items-end gap-1">
-                    <LimitSetter currentLimit={data.limit} date={date} />
-                    <BurnSetter currentBurn={data.burn} date={date} />
-                    <DayMarkButtons mark={data.mark} date={date} />
-                  </div>
+        <div className="space-y-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-baseline gap-2">
+                <span className={`figure text-hero ${counterColor || "text-fg"}`}>{data.total}</span>
+                <span className="text-xs font-medium text-fg-subtle">kcal</span>
+              </div>
+              {isOver && (
+                <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-danger-soft px-2 py-0.5 text-micro font-semibold uppercase tracking-label text-danger">
+                  <Icon path={ICONS.flame} size={11} />
+                  Over limit
                 </div>
+              )}
+              <MacroTotals data={data} />
+            </div>
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <LimitSetter currentLimit={data.limit} date={date} />
+              <BurnSetter currentBurn={data.burn} date={date} />
+            </div>
+          </div>
 
-                <ProgressBar total={data.total} limit={data.limit} />
+          <ProgressBar total={data.total} limit={data.limit} />
 
-                <LiveBurnCounter burnRate={data.burn} consumed={data.total} limit={data.limit} isToday={isCurrentDay} />
-              </>
-            );
-          })()}
+          <LiveBurnCounter burnRate={data.burn} consumed={data.total} limit={data.limit} isToday={isCurrentDay} />
 
-          <div className="border-t-2 border-foreground pt-4">
+          <div className="flex justify-end">
+            <DayMarkButtons mark={data.mark} date={date} />
+          </div>
+
+          <div className="border-t border-line pt-5">
             <AddEntryForm date={date} />
           </div>
 
           {data.entries.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8 tracking-wider">
-              NO ENTRIES YET
-            </p>
+            <div className="flex flex-col items-center gap-1 py-8 text-center">
+              <p className="text-sm text-fg-muted">Nothing logged yet</p>
+              <p className="text-mini text-fg-subtle">Add your first entry above</p>
+            </div>
           ) : (
-            <div className="border-t border-muted pt-1">
+            <div className="border-t border-line pt-1">
               {data.entries.map((entry) => (
                 <EntryItem key={entry.id} entry={entry} date={date} />
               ))}
@@ -2176,6 +2763,8 @@ HTML = """\
         </div>
       );
     }
+
+    // ── Estimator ────────────────────────────────────────────────
 
     // The estimate contents (form + result). Lives inside the modal so it has
     // room to breathe; the breakdown table needs the width.
@@ -2193,24 +2782,23 @@ HTML = """\
 
       return (
         <>
-          <div className="flex items-start justify-between px-5 py-4 border-b-2 border-foreground">
-            <div>
-              <h2 className="text-xs font-bold tracking-[0.3em]">KCAL ESTIMATOR</h2>
-              <p className="text-[10px] tracking-wider text-muted-foreground mt-1">
-                ASK, DON'T TRACK
-              </p>
+          <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
+                <Icon path={ICONS.sparkles} size={17} />
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold text-fg">Kcal estimator</h2>
+                <p className="text-mini text-fg-muted">Ask, don't track</p>
+              </div>
             </div>
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              className="w-8 h-8 border-2 border-foreground flex items-center justify-center text-sm font-bold hover:bg-foreground hover:text-background transition-colors shrink-0"
-            >
-              ✕
+            <button onClick={onClose} aria-label="Close" className="btn btn-ghost btn-icon btn-md">
+              <Icon path={ICONS.close} size={15} />
             </button>
           </div>
 
-          <div className="p-5 space-y-4 overflow-y-auto">
-            <form onSubmit={onSubmit} className="flex flex-col gap-0">
+          <div className="space-y-4 overflow-y-auto p-5">
+            <form onSubmit={onSubmit} className="space-y-2">
               <textarea
                 autoFocus
                 value={input}
@@ -2222,61 +2810,65 @@ HTML = """\
                   }
                 }}
                 placeholder="e.g. 955g red cabbage, 177g sausage, 952g cooked lentils"
-                rows={4}
+                rows={3}
                 disabled={mutation.isPending}
-                className="w-full border-2 border-foreground px-3 py-2.5 text-sm bg-transparent font-mono focus:outline-none placeholder:text-muted-foreground resize-y"
+                className="field w-full resize-y"
               />
-              <button
-                type="submit"
-                disabled={mutation.isPending || input.trim().length === 0}
-                className="border-2 border-t-0 border-foreground px-4 py-2.5 text-sm font-bold bg-foreground text-background hover:bg-transparent hover:text-foreground transition-colors disabled:opacity-30"
-              >
-                {mutation.isPending ? "THINKING..." : "ASK"}
-              </button>
-              <p className="text-[10px] tracking-wider text-muted-foreground mt-1.5">
-                ⌘/CTRL + ENTER TO ASK
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-micro text-fg-subtle">
+                  <kbd>⌘</kbd> <kbd>↵</kbd> to ask
+                </p>
+                <button
+                  type="submit"
+                  disabled={mutation.isPending || input.trim().length === 0}
+                  className="btn btn-primary btn-lg"
+                >
+                  {mutation.isPending ? "Thinking…" : "Ask"}
+                </button>
+              </div>
             </form>
 
             {mutation.data && !mutation.isPending && (
-              <div className="border-2 border-dashed border-foreground px-4 py-3">
-                <div className="text-4xl font-bold tabular-nums tracking-tight">
-                  {mutation.data.kcal} <span className="text-sm tracking-wider text-muted-foreground">KCAL</span>
+              <div className="panel p-4">
+                <div className="flex items-baseline gap-2">
+                  <span className="figure text-stat text-fg">{mutation.data.kcal}</span>
+                  <span className="text-xs font-medium text-fg-subtle">kcal</span>
                 </div>
-                <div className="text-sm tracking-wider mt-1 text-muted-foreground tabular-nums">
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-fg-muted">
                   {MACROS.map((m, i) => (
-                    <span key={m.key}>
-                      {i > 0 && <span className="mx-1.5 text-muted-foreground/40">·</span>}
-                      <span className="font-bold text-foreground">{fmtGrams(mutation.data.macros[m.key])}</span> {m.label}
+                    <span key={m.key} className="inline-flex items-center gap-1">
+                      {i > 0 && <span className="text-line-strong">·</span>}
+                      <span className="font-semibold text-fg">{fmtGrams(mutation.data.macros[m.key])}</span>
+                      <span>{m.label.toLowerCase()}</span>
                     </span>
                   ))}
                 </div>
 
                 {mutation.data.items.length > 0 && (
-                  <div className="mt-4 text-xs text-muted-foreground">
-                    <div className="flex gap-3 pb-1.5 border-b border-muted text-muted-foreground/60 tracking-wider">
-                      <span className="flex-1">ITEM</span>
-                      <span className="w-16 text-right shrink-0">KCAL</span>
+                  <div className="mt-4 text-mini text-fg-muted">
+                    <div className="flex gap-3 border-b border-line pb-1.5 text-fg-subtle">
+                      <span className="flex-1">Item</span>
+                      <span className="w-14 shrink-0 text-right">Kcal</span>
                       {MACROS.map((m) => (
-                        <span key={m.key} className="w-14 text-right shrink-0">{m.short}</span>
+                        <span key={m.key} className="w-12 shrink-0 text-right">{m.short}</span>
                       ))}
                     </div>
                     {mutation.data.items.map((item, i) => (
-                      <div key={i} className="flex gap-3 py-1 border-b border-muted last:border-b-0">
-                        <span className="flex-1 break-words text-foreground">{item.name}</span>
-                        <span className="w-16 text-right tabular-nums shrink-0">{item.kcal}</span>
+                      <div key={i} className="flex gap-3 border-b border-line py-1.5 last:border-b-0">
+                        <span className="flex-1 break-words text-fg">{item.name}</span>
+                        <span className="w-14 shrink-0 text-right tabular-nums">{item.kcal}</span>
                         {MACROS.map((m) => (
-                          <span key={m.key} className="w-14 text-right tabular-nums shrink-0">
+                          <span key={m.key} className="w-12 shrink-0 text-right tabular-nums">
                             {fmtGrams(item[`${m.key}_g`])}
                           </span>
                         ))}
                       </div>
                     ))}
-                    <div className="flex gap-3 py-1.5 mt-1 border-t-2 border-foreground text-foreground">
-                      <span className="flex-1 tracking-wider font-bold">TOTAL</span>
-                      <span className="w-16 text-right tabular-nums font-bold shrink-0">{mutation.data.kcal}</span>
+                    <div className="mt-1 flex gap-3 border-t border-line-strong py-1.5 text-fg">
+                      <span className="flex-1 font-semibold">Total</span>
+                      <span className="w-14 shrink-0 text-right font-semibold tabular-nums">{mutation.data.kcal}</span>
                       {MACROS.map((m) => (
-                        <span key={m.key} className="w-14 text-right tabular-nums font-bold shrink-0">
+                        <span key={m.key} className="w-12 shrink-0 text-right font-semibold tabular-nums">
                           {fmtGrams(mutation.data.macros[m.key])}
                         </span>
                       ))}
@@ -2285,9 +2877,7 @@ HTML = """\
                 )}
 
                 {mutation.data.note && (
-                  <div className="text-[11px] tracking-wider text-muted-foreground mt-3">
-                    {mutation.data.note}
-                  </div>
+                  <div className="mt-3 text-mini text-fg-subtle">{mutation.data.note}</div>
                 )}
               </div>
             )}
@@ -2305,30 +2895,37 @@ HTML = """\
       const [open, setOpen] = useState(false);
 
       // Esc closes; remounting the body on each open clears the previous answer.
+      // The page behind is frozen so a scroll gesture cannot drift it.
       useEffect(() => {
         if (!open) return;
         const h = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
         window.addEventListener("keydown", h);
-        return () => window.removeEventListener("keydown", h);
+        const previous = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        return () => {
+          window.removeEventListener("keydown", h);
+          document.body.style.overflow = previous;
+        };
       }, [open]);
 
       return (
         <>
-          <button
-            onClick={() => setOpen(true)}
-            className="w-full border-2 border-foreground px-4 py-3 text-xs font-bold tracking-[0.3em] hover:bg-foreground hover:text-background transition-colors"
-          >
-            ≈ KCAL ESTIMATOR
+          <button onClick={() => setOpen(true)} className="btn btn-outline btn-lg w-full gap-2">
+            <Icon path={ICONS.sparkles} size={15} className="text-accent" />
+            Kcal estimator
           </button>
 
           {open && (
             <div
               onClick={() => setOpen(false)}
-              className="fixed inset-0 z-50 bg-black/50 flex items-start sm:items-center justify-center p-3 sm:p-6 overflow-y-auto"
+              role="dialog"
+              aria-modal="true"
+              className="scrim fixed inset-0 flex items-start justify-center overflow-y-auto p-3 sm:items-center sm:p-6"
+              style={{ zIndex: "var(--z-overlay)" }}
             >
               <div
                 onClick={(e) => e.stopPropagation()}
-                className="w-full max-w-2xl bg-background border-2 border-foreground max-h-[90dvh] flex flex-col my-auto"
+                className="dialog my-auto flex max-h-[90dvh] w-full max-w-2xl flex-col"
               >
                 <QuickEstimateBody onClose={() => setOpen(false)} />
               </div>
@@ -2338,15 +2935,20 @@ HTML = """\
       );
     }
 
+    // ── Fallbacks ────────────────────────────────────────────────
+
     function ErrorFallback({ error, resetErrorBoundary }: { error: Error; resetErrorBoundary: () => void }) {
       return <AppErrorMessage error={error} retry={resetErrorBoundary} />;
     }
 
     function LoadingFallback() {
       return (
-        <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
-          <span className="text-xs tracking-wider">LOADING</span>
-          <span className="animate-pulse">■</span>
+        <div className="flex items-center justify-center gap-2 py-12 text-fg-subtle">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" className="animate-spin" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.25" />
+            <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+          </svg>
+          <span className="text-xs">Loading</span>
         </div>
       );
     }
@@ -2389,46 +2991,53 @@ HTML = """\
 
       return (
         <QueryClientProvider client={queryClient}>
-          <div className="min-h-[100dvh] flex flex-col sm:items-center sm:justify-start p-0 sm:p-4 sm:pt-20">
-            <div className="w-full max-w-md flex flex-col min-h-[100dvh] sm:min-h-0">
+          <div className="relative min-h-[100dvh] bg-canvas text-fg">
+            <ThemeToggle />
 
-              {/* Header */}
-              <div className="border-b-2 border-foreground sm:border-2">
-                <div className="flex items-center justify-between px-4 py-3 border-b-2 border-foreground">
-                  <h1 className="text-xs font-bold tracking-[0.3em]">KCAL TRACKER</h1>
-                  {!isToday && (
-                    <button
-                      onClick={goToday}
-                      className="text-xs tracking-wider text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      TODAY →
-                    </button>
-                  )}
+            <div
+              className="mx-auto flex w-full flex-col gap-3 px-4 pb-10 pt-5 sm:gap-3.5 sm:pb-16 sm:pt-16"
+              style={{ maxWidth: "var(--app-width)" }}
+            >
+              {/* Title */}
+              <div className="flex h-8 items-center pr-12">
+                <h1 className="text-micro font-semibold uppercase tracking-title text-fg-muted">
+                  Kcal Tracker
+                </h1>
+              </div>
+
+              {/* Date navigation */}
+              <div className="card flex items-center justify-between gap-2 px-2.5 py-2.5">
+                <button
+                  onClick={goBack}
+                  aria-label="Previous day"
+                  className="btn btn-ghost btn-icon btn-lg"
+                >
+                  <Icon path={ICONS.chevronLeft} size={17} />
+                </button>
+
+                <div className="min-w-0 text-center">
+                  <div className="truncate text-sm font-semibold text-fg">{formatDate(date)}</div>
+                  <div className="mt-0.5 truncate text-mini tabular-nums text-fg-subtle">{dateSubtitle(date)}</div>
                 </div>
 
-                {/* Date navigation */}
-                <div className="flex items-center justify-between px-4 py-4">
-                  <button
-                    onClick={goBack}
-                    className="w-10 h-10 border-2 border-foreground flex items-center justify-center text-lg font-bold hover:bg-foreground hover:text-background transition-colors select-none"
-                  >
-                    ←
-                  </button>
-                  <div className="text-center">
-                    <div className="text-sm font-bold tracking-wider">{formatDate(date)}</div>
-                    <div className="text-xs text-muted-foreground tracking-wider mt-0.5">{date}</div>
-                  </div>
+                <div className="flex items-center gap-1">
+                  {!isToday && (
+                    <button onClick={goToday} className="btn btn-sm btn-soft">
+                      Today
+                    </button>
+                  )}
                   <button
                     onClick={goForward}
-                    className="w-10 h-10 border-2 border-foreground flex items-center justify-center text-lg font-bold hover:bg-foreground hover:text-background transition-colors select-none"
+                    aria-label="Next day"
+                    className="btn btn-ghost btn-icon btn-lg"
                   >
-                    →
+                    <Icon path={ICONS.chevronRight} size={17} />
                   </button>
                 </div>
               </div>
 
               {/* Body */}
-              <div className="flex-1 sm:flex-none border-b-2 border-foreground sm:border-2 sm:border-t-0 p-5">
+              <div className="card p-5">
                 <ErrorBoundary FallbackComponent={ErrorFallback} resetKeys={[date]}>
                   <Suspense fallback={<LoadingFallback />}>
                     <DayView date={date} />
@@ -2436,8 +3045,8 @@ HTML = """\
                 </ErrorBoundary>
               </div>
 
-              {/* Average Intake */}
-              <div className="sm:border-2 sm:border-t-0 border-b-2 border-foreground sm:border-b-2">
+              {/* Average intake */}
+              <div className="card overflow-hidden">
                 <ErrorBoundary FallbackComponent={ErrorFallback}>
                   <Suspense fallback={null}>
                     <AverageIntake />
@@ -2446,7 +3055,7 @@ HTML = """\
               </div>
 
               {/* Cumulative */}
-              <div className="sm:border-2 sm:border-t-0 border-b-2 border-foreground sm:border-b-2">
+              <div className="card overflow-hidden empty:hidden">
                 <ErrorBoundary FallbackComponent={ErrorFallback}>
                   <Suspense fallback={null}>
                     <CumulativeWeightChange />
@@ -2456,17 +3065,16 @@ HTML = """\
 
               {/* Quick estimator: a trigger button in the flow that opens a wide
                   centered modal, so the breakdown table has room to render. */}
-              <div className="mt-4 sm:mt-3">
+              <div className="mt-1">
                 <QuickEstimate />
               </div>
 
               {/* Footer */}
-              <div className="text-center py-3 sm:mt-3 sm:py-0">
-                <span className="text-[10px] tracking-wider text-muted-foreground">
-                  ← → KEYS TO NAVIGATE
-                </span>
+              <div className="mt-1 flex items-center justify-center gap-1.5 text-micro text-fg-subtle">
+                <kbd>←</kbd>
+                <kbd>→</kbd>
+                <span>to change day</span>
               </div>
-
             </div>
           </div>
         </QueryClientProvider>
