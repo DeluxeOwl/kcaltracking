@@ -1163,18 +1163,25 @@ HTML = """\
       color-scheme: light;
 
       /* Nine-step neutral ramp; depth is tonal, so a surface is "raised"
-         by moving a rung, never by casting a shadow. */
-      --canvas: #ffffff;      /* surface-1000 */
-      --surface: #ececec;     /* surface-500  — card fill */
-      --raised: #f4f4f4;      /* surface-700  — panels, fields */
-      --sunken: #e4e4e4;      /* surface-400  — tracks, wells */
-      --hover: #d4d4d4;       /* surface-200  — the single hover fill */
-      --active: #c9c9c9;
+         by moving a rung, never by casting a shadow.
 
-      --fg: #191919;
-      --fg-strong: #000000;
-      --fg-muted: #626262;
-      --fg-subtle: #7a7a7a;
+         This follows the app-layer contract (--surface-1000 is both the
+         background and the card fill), not the marketing page's. In a
+         dense UI almost every pixel is card, so putting the card at
+         surface-500 would set all small text on a grey that costs a full
+         contrast rung. The page recedes instead and the card holds white. */
+      --canvas: #ececec;      /* surface-500  — page, behind the cards */
+      --surface: #ffffff;     /* surface-1000 — card fill */
+      --raised: #f0f0f0;      /* surface-600  — panels, fields, wells */
+      --sunken: #e4e4e4;      /* surface-400  — tracks, secondary buttons */
+      --hover: #ececec;       /* the single hover fill, on a white card */
+      --active: #e4e4e4;
+
+      --fg: #191919;          /* fg-100 */
+      --fg-strong: #000000;   /* fg-50  */
+      --fg-secondary: #4a4a4a;/* fg-200 — secondary copy */
+      --fg-muted: #626262;    /* fg-300 — labels, eyebrows, metadata */
+      --fg-subtle: #7a7a7a;   /* fg-400 — placeholder and disabled only */
       --on-accent: #ffffff;
 
       /* Dividers sit a rung away from the card fill so they stay visible
@@ -1212,14 +1219,15 @@ HTML = """\
 
       /* The same ramp inverted — the two themes are strict mirrors. */
       --canvas: #080808;
-      --surface: #212121;
-      --raised: #171717;
+      --surface: #171717;
+      --raised: #212121;
       --sunken: #262626;
-      --hover: #303030;
-      --active: #3a3a3a;
+      --hover: #262626;
+      --active: #303030;
 
       --fg: #e6e6e6;
       --fg-strong: #ffffff;
+      --fg-secondary: #b5b5b5;
       --fg-muted: #9d9d9d;
       --fg-subtle: #858585;
       --on-accent: #ffffff;
@@ -1269,6 +1277,7 @@ HTML = """\
 
       --color-fg: var(--fg);
       --color-fg-strong: var(--fg-strong);
+      --color-fg-secondary: var(--fg-secondary);
       --color-fg-muted: var(--fg-muted);
       --color-fg-subtle: var(--fg-subtle);
       --color-on-accent: var(--on-accent);
@@ -1434,7 +1443,9 @@ HTML = """\
         letter-spacing: var(--ls-label);
         text-transform: uppercase;
         font-weight: 500;
-        color: var(--fg-subtle);
+        /* fg-400 is the placeholder tone; a 10px uppercase label needs the
+           label tone, or it drops under 4.5:1 against the card. */
+        color: var(--fg-muted);
       }
 
       .figure {
@@ -1492,7 +1503,7 @@ HTML = """\
 
       /* ── Fields ─────────────────────────────────────────────── */
       .field {
-        background: var(--canvas);
+        background: var(--raised);
         border: 1px solid var(--line);
         border-radius: var(--r-md);
         color: var(--fg);
@@ -1522,7 +1533,7 @@ HTML = """\
         align-items: center;
         gap: 0;
         padding: 0.25rem;
-        background: var(--canvas);
+        background: var(--raised);
         border: 0;
         border-radius: var(--r-full);
         transition: background-color var(--dur-fast) var(--ease-standard);
@@ -1573,7 +1584,7 @@ HTML = """\
       }
       .seg-item:hover { color: var(--fg-strong); }
       .seg-item[data-on="true"] {
-        background: var(--canvas);
+        background: var(--surface);
         color: var(--fg-strong);
         box-shadow: none;
       }
@@ -1603,7 +1614,7 @@ HTML = """\
         animation: scrim-in var(--dur-med) var(--ease-standard);
       }
       .dialog {
-        background: var(--canvas);
+        background: var(--surface);
         border: 1px solid var(--line);
         border-radius: var(--r-lg);
         box-shadow: var(--elev-lg);
@@ -2127,11 +2138,11 @@ HTML = """\
       if (!editing) {
         return (
           <button onClick={() => setEditing(true)} className="btn btn-sm btn-ghost gap-1.5">
-            <span className="text-fg-subtle">{label}</span>
+            <span className="text-fg-muted">{label}</span>
             {current !== null ? (
               <span className="font-medium tabular-nums text-fg">{current}</span>
             ) : (
-              <span className="text-fg-subtle">— set</span>
+              <span className="text-fg-muted">— set</span>
             )}
           </button>
         );
@@ -2239,7 +2250,7 @@ HTML = """\
       const trend = gramsTrend(grams);
       return (
         <div className="flex items-center justify-end gap-2">
-          <span className="text-micro text-fg-subtle">{label}</span>
+          <span className="text-micro text-fg-muted">{label}</span>
           <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular-nums ${trendColor[trend]}`}>
             <TrendArrow trend={trend} size={12} />
             {formatGrams(grams)}
@@ -2275,7 +2286,7 @@ HTML = """\
         <div className="panel p-4">
           <div className="mb-3 flex items-center justify-between">
             <span className="eyebrow">{isToday ? "Live weight change" : "Final weight change"}</span>
-            <span className="text-micro tabular-nums text-fg-subtle">
+            <span className="text-micro tabular-nums text-fg-muted">
               {Math.round(burn.burnedSoFar)} burned
             </span>
           </div>
@@ -2290,7 +2301,7 @@ HTML = """\
               <div className={`mt-1 text-mini font-medium capitalize ${trendColor[trend]}`}>
                 {trend}
               </div>
-              <div className="mt-0.5 text-micro tabular-nums text-fg-subtle">
+              <div className="mt-0.5 text-micro tabular-nums text-fg-muted">
                 Deficit {burn.deficit >= 0 ? "+" : ""}{Math.round(burn.deficit)} kcal
               </div>
             </div>
@@ -2311,7 +2322,7 @@ HTML = """\
                     <ForecastRow label="7 days" grams={weekGrams} />
                     <ForecastRow label="30 days" grams={monthGrams} />
                     {alreadyOverLimit && (
-                      <div className="text-micro text-fg-subtle">Today already over limit</div>
+                      <div className="text-micro text-fg-muted">Today already over limit</div>
                     )}
                   </div>
                 ) : (
@@ -2319,7 +2330,7 @@ HTML = """\
                     <div className="eyebrow">If every day like today</div>
                     <ForecastRow label="7 days" grams={weekGrams} />
                     <ForecastRow label="30 days" grams={monthGrams} />
-                    <div className="text-micro text-fg-subtle">Set a limit for a real forecast</div>
+                    <div className="text-micro text-fg-muted">Set a limit for a real forecast</div>
                   </div>
                 )}
               </div>
@@ -2406,7 +2417,7 @@ HTML = """\
 
       if (entry.macros_state === "pending" || retry.isPending) {
         return (
-          <span className="inline-flex items-center gap-1 text-mini text-fg-subtle" title="Estimating macros">
+          <span className="inline-flex items-center gap-1 text-mini text-fg-muted" title="Estimating macros">
             <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-current" />
             <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:150ms]" />
             <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:300ms]" />
@@ -2419,7 +2430,7 @@ HTML = """\
           <button
             onClick={() => retry.mutate()}
             title="Macro estimate unavailable — click to retry"
-            className="btn btn-sm btn-ghost -ml-1.5 gap-1 text-fg-subtle"
+            className="btn btn-sm btn-ghost -ml-1.5 gap-1 text-fg-muted"
           >
             <Icon path={ICONS.retry} size={11} />
             Retry
@@ -2437,7 +2448,7 @@ HTML = """\
         <span
           onClick={incomplete ? () => retry.mutate() : undefined}
           title={incomplete ? "Estimated before fat and fiber were tracked — click to re-estimate" : undefined}
-          className={`inline-flex items-center gap-1.5 text-mini tabular-nums text-fg-subtle ${incomplete ? "cursor-pointer hover:text-fg" : ""}`}
+          className={`inline-flex items-center gap-1.5 text-mini tabular-nums text-fg-muted ${incomplete ? "cursor-pointer hover:text-fg" : ""}`}
         >
           {MACROS.map((m, i) => (
             <span key={m.key} className="inline-flex items-center gap-1">
@@ -2471,7 +2482,7 @@ HTML = """\
               <span>{m.label.toLowerCase()}</span>
             </span>
           ))}
-          {partial && <span className="text-fg-subtle">*</span>}
+          {partial && <span className="text-fg-muted">*</span>}
         </div>
       );
     }
@@ -2497,13 +2508,13 @@ HTML = """\
               onClick={canExpand ? () => setExpanded((v) => !v) : undefined}
               className={`flex min-w-0 items-baseline gap-3 ${canExpand ? "cursor-pointer" : ""}`}
             >
-              <span className="w-11 shrink-0 text-mini tabular-nums text-fg-subtle">{entry.time}</span>
+              <span className="w-11 shrink-0 text-mini tabular-nums text-fg-muted">{entry.time}</span>
               <span className="w-12 shrink-0 text-right text-sm font-medium tabular-nums text-fg">
                 {entry.kcal}
               </span>
               <span className="break-words text-sm text-fg">{entry.description}</span>
               {canExpand && (
-                <span className="shrink-0 self-center text-fg-subtle">
+                <span className="shrink-0 self-center text-fg-muted">
                   <Icon
                     path={ICONS.chevronDown}
                     size={12}
@@ -2531,7 +2542,7 @@ HTML = """\
 
           {canExpand && expanded && (
             <div className="mt-2 ml-4 border-l border-line pl-3 text-mini text-fg-muted">
-              <div className="flex gap-2 pb-1 text-fg-subtle">
+              <div className="flex gap-2 pb-1 text-fg-muted">
                 <span className="flex-1" />
                 {MACROS.map((m) => (
                   <span key={m.key} className="w-12 shrink-0 text-right">{m.short}</span>
@@ -2621,7 +2632,7 @@ HTML = """\
             <div className="figure shrink-0 text-stat text-fg">
               {data.days_counted > 0 ? Math.round(data.average_kcal) : "—"}
               {data.days_counted > 0 && (
-                <span className="ml-1 text-mini font-medium tracking-normal text-fg-subtle">kcal</span>
+                <span className="ml-1 text-mini font-medium tracking-normal text-fg-muted">kcal</span>
               )}
             </div>
           </div>
@@ -2780,7 +2791,7 @@ HTML = """\
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
                 <span className={`figure text-hero ${counterColor || "text-fg"}`}>{data.total}</span>
-                <span className="text-xs font-medium text-fg-subtle">kcal</span>
+                <span className="text-xs font-medium text-fg-muted">kcal</span>
               </div>
               {isOver && (
                 <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium uppercase tracking-label text-danger">
@@ -2811,7 +2822,7 @@ HTML = """\
           {data.entries.length === 0 ? (
             <div className="flex flex-col items-center gap-1 py-8 text-center">
               <p className="text-sm text-fg-muted">Nothing logged yet</p>
-              <p className="text-mini text-fg-subtle">Add your first entry above</p>
+              <p className="text-mini text-fg-muted">Add your first entry above</p>
             </div>
           ) : (
             <div className="border-t border-line pt-1">
@@ -2875,7 +2886,7 @@ HTML = """\
                 className="field w-full resize-y"
               />
               <div className="flex items-center justify-between gap-3">
-                <p className="text-micro text-fg-subtle">
+                <p className="text-micro text-fg-muted">
                   <kbd>⌘</kbd> <kbd>↵</kbd> to ask
                 </p>
                 <button
@@ -2892,7 +2903,7 @@ HTML = """\
               <div className="panel p-4">
                 <div className="flex items-baseline gap-2">
                   <span className="figure text-stat text-fg">{mutation.data.kcal}</span>
-                  <span className="text-xs font-medium text-fg-subtle">kcal</span>
+                  <span className="text-xs font-medium text-fg-muted">kcal</span>
                 </div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-fg-muted">
                   {MACROS.map((m, i) => (
@@ -2906,7 +2917,7 @@ HTML = """\
 
                 {mutation.data.items.length > 0 && (
                   <div className="mt-4 text-mini text-fg-muted">
-                    <div className="flex gap-3 border-b border-line pb-1.5 text-fg-subtle">
+                    <div className="flex gap-3 border-b border-line pb-1.5 text-fg-muted">
                       <span className="flex-1">Item</span>
                       <span className="w-14 shrink-0 text-right">Kcal</span>
                       {MACROS.map((m) => (
@@ -2937,7 +2948,7 @@ HTML = """\
                 )}
 
                 {mutation.data.note && (
-                  <div className="mt-3 text-mini text-fg-subtle">{mutation.data.note}</div>
+                  <div className="mt-3 text-mini text-fg-muted">{mutation.data.note}</div>
                 )}
               </div>
             )}
@@ -3003,7 +3014,7 @@ HTML = """\
 
     function LoadingFallback() {
       return (
-        <div className="flex items-center justify-center gap-2 py-12 text-fg-subtle">
+        <div className="flex items-center justify-center gap-2 py-12 text-fg-muted">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" className="animate-spin" aria-hidden="true">
             <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.25" />
             <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
@@ -3077,7 +3088,7 @@ HTML = """\
 
                 <div className="min-w-0 text-center">
                   <div className="truncate text-sm font-medium text-fg">{formatDate(date)}</div>
-                  <div className="mt-0.5 truncate text-mini tabular-nums text-fg-subtle">{dateSubtitle(date)}</div>
+                  <div className="mt-0.5 truncate text-mini tabular-nums text-fg-muted">{dateSubtitle(date)}</div>
                 </div>
 
                 <div className="flex items-center gap-1">
@@ -3130,7 +3141,7 @@ HTML = """\
               </div>
 
               {/* Footer */}
-              <div className="mt-1 flex items-center justify-center gap-1.5 text-micro text-fg-subtle">
+              <div className="mt-1 flex items-center justify-center gap-1.5 text-micro text-fg-muted">
                 <kbd>←</kbd>
                 <kbd>→</kbd>
                 <span>to change day</span>
