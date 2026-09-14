@@ -1049,8 +1049,8 @@ HTML = """\
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#08090a" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#080808" media="(prefers-color-scheme: dark)" />
   <title>KCAL</title>
 
   <!-- Resolve the theme before first paint so there is no flash of the wrong
@@ -1119,7 +1119,8 @@ HTML = """\
 
       --ls-label: 0.08em;     /* uppercase eyebrows */
       --ls-title: 0.14em;     /* the app title */
-      --ls-figure: -0.02em;   /* big numerals pull tighter */
+      --ls-figure: -0.025em;  /* big numerals pull tighter */
+      --ls-heading: -0.015em; /* headings track in slightly */
 
       /* ── Radii ────────────────────────────────────────────────── */
       --r-xs: 4px;
@@ -1127,6 +1128,8 @@ HTML = """\
       --r-md: 8px;
       --r-lg: 12px;
       --r-xl: 16px;
+      /* The card step — a custom rung between lg and xl. */
+      --r-card: 10px;
       --r-full: 9999px;
 
       /* ── Metrics ──────────────────────────────────────────────── */
@@ -1137,17 +1140,17 @@ HTML = """\
       --control-h-md: 2rem;
       --control-h-lg: 2.25rem;
       --bar-h: 0.375rem;
-      --ring-w: 3px;
+      --ring-w: 2px;      /* focus ring, drawn as an offset outline */
       /* Aligns an entry's sub-lines under its description:
          time (2.75rem) + gap (0.75rem) + kcal (3rem) + gap (0.75rem). */
       --macro-indent: 7.25rem;
 
       /* ── Motion ───────────────────────────────────────────────── */
-      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-out-expo: cubic-bezier(0.22, 1, 0.36, 1);
       --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
-      --dur-fast: 120ms;
-      --dur-med: 180ms;
-      --dur-slow: 320ms;
+      --dur-fast: 150ms;
+      --dur-med: 200ms;
+      --dur-slow: 300ms;
 
       /* ── Elevation ────────────────────────────────────────────── */
       --z-toggle: 30;
@@ -1159,82 +1162,92 @@ HTML = """\
     :root[data-theme="light"] {
       color-scheme: light;
 
-      --canvas: #f7f7f8;
-      --surface: #ffffff;
-      --raised: #f4f4f6;
-      --sunken: #ebebef;
-      --hover: rgba(9, 9, 11, 0.045);
-      --active: rgba(9, 9, 11, 0.08);
+      /* Nine-step neutral ramp; depth is tonal, so a surface is "raised"
+         by moving a rung, never by casting a shadow. */
+      --canvas: #ffffff;      /* surface-1000 */
+      --surface: #ececec;     /* surface-500  — card fill */
+      --raised: #f4f4f4;      /* surface-700  — panels, fields */
+      --sunken: #e4e4e4;      /* surface-400  — tracks, wells */
+      --hover: #d4d4d4;       /* surface-200  — the single hover fill */
+      --active: #c9c9c9;
 
-      --fg: #16171a;
-      --fg-muted: #6a6e77;
-      --fg-subtle: #9b9fa8;
+      --fg: #191919;
+      --fg-strong: #000000;
+      --fg-muted: #626262;
+      --fg-subtle: #7a7a7a;
       --on-accent: #ffffff;
 
-      --line: rgba(9, 9, 11, 0.09);
-      --line-strong: rgba(9, 9, 11, 0.17);
+      /* Dividers sit a rung away from the card fill so they stay visible
+         without becoming a drawn border. */
+      --line: #dcdcdc;
+      --line-strong: #c9c9c9;
 
-      --accent: #5e6ad2;
-      --accent-hover: #4d59c4;
-      --accent-soft: rgba(94, 106, 210, 0.13);
+      /* The one chromatic value in the palette — identical in both modes. */
+      --accent: #ff6b01;
+      --accent-hover: #f05f00;
+      --accent-active: #d95500;
+      --accent-soft: rgba(255, 107, 1, 0.14);
 
-      --positive: #1f9d63;
-      --positive-soft: rgba(31, 157, 99, 0.12);
-      --caution: #a37211;
-      --caution-soft: rgba(242, 201, 76, 0.2);
-      --warn: #c4700d;
-      --warn-soft: rgba(242, 153, 74, 0.16);
-      --danger: #d13d3d;
-      --danger-soft: rgba(209, 61, 61, 0.11);
+      --positive: #15803d;
+      --positive-soft: #eaf6ee;
+      --caution: #a16207;
+      --caution-soft: #fbf6e2;
+      --warn: #b45309;
+      --warn-soft: #f9efe4;
+      --danger: #b91c1c;
+      --danger-soft: #f7e9e9;
 
-      --overlay: rgba(16, 17, 19, 0.4);
-      --scrim-blur: 6px;
+      --overlay: rgba(0, 0, 0, 0.32);
+      --scrim-blur: 4px;
 
-      --elev-xs: 0 1px 2px rgba(9, 9, 11, 0.06);
-      --elev-sm: 0 1px 2px rgba(9, 9, 11, 0.05), 0 1px 3px rgba(9, 9, 11, 0.05);
-      --elev-md: 0 2px 4px rgba(9, 9, 11, 0.04), 0 6px 16px rgba(9, 9, 11, 0.07);
-      --elev-lg: 0 8px 20px rgba(9, 9, 11, 0.1), 0 24px 56px rgba(9, 9, 11, 0.14);
+      --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+      --elev-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --elev-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+      --elev-lg: 0 4px 12px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.05);
     }
 
     /* ── Dark theme ─────────────────────────────────────────────── */
     :root[data-theme="dark"] {
       color-scheme: dark;
 
-      --canvas: #08090a;
-      --surface: #0f1011;
-      --raised: #161719;
-      --sunken: #1e1f22;
-      --hover: rgba(255, 255, 255, 0.055);
-      --active: rgba(255, 255, 255, 0.09);
+      /* The same ramp inverted — the two themes are strict mirrors. */
+      --canvas: #080808;
+      --surface: #212121;
+      --raised: #171717;
+      --sunken: #262626;
+      --hover: #303030;
+      --active: #3a3a3a;
 
-      --fg: #f7f8f8;
-      --fg-muted: #8a8f98;
-      --fg-subtle: #62666d;
+      --fg: #e6e6e6;
+      --fg-strong: #ffffff;
+      --fg-muted: #9d9d9d;
+      --fg-subtle: #858585;
       --on-accent: #ffffff;
 
-      --line: rgba(255, 255, 255, 0.09);
-      --line-strong: rgba(255, 255, 255, 0.16);
+      --line: #303030;
+      --line-strong: #3a3a3a;
 
-      --accent: #6e79d6;
-      --accent-hover: #838de0;
-      --accent-soft: rgba(110, 121, 214, 0.2);
+      --accent: #ff6b01;
+      --accent-hover: #f05f00;
+      --accent-active: #d95500;
+      --accent-soft: rgba(255, 107, 1, 0.18);
 
-      --positive: #4cb782;
-      --positive-soft: rgba(76, 183, 130, 0.16);
-      --caution: #f2c94c;
-      --caution-soft: rgba(242, 201, 76, 0.16);
-      --warn: #f2994a;
-      --warn-soft: rgba(242, 153, 74, 0.16);
-      --danger: #eb5757;
-      --danger-soft: rgba(235, 87, 87, 0.15);
+      --positive: #4ade80;
+      --positive-soft: #10291a;
+      --caution: #facc15;
+      --caution-soft: #2b240d;
+      --warn: #fb923c;
+      --warn-soft: #2e1d0d;
+      --danger: #f87171;
+      --danger-soft: #301313;
 
       --overlay: rgba(0, 0, 0, 0.62);
-      --scrim-blur: 6px;
+      --scrim-blur: 4px;
 
-      --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-      --elev-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
-      --elev-md: 0 2px 4px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.45);
-      --elev-lg: 0 8px 20px rgba(0, 0, 0, 0.5), 0 24px 56px rgba(0, 0, 0, 0.6);
+      --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --elev-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+      --elev-md: 0 4px 12px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+      --elev-lg: 0 4px 12px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.35);
     }
 
     /* ════════════════════════════════════════════════════════════════
@@ -1255,6 +1268,7 @@ HTML = """\
       --color-active: var(--active);
 
       --color-fg: var(--fg);
+      --color-fg-strong: var(--fg-strong);
       --color-fg-muted: var(--fg-muted);
       --color-fg-subtle: var(--fg-subtle);
       --color-on-accent: var(--on-accent);
@@ -1264,6 +1278,7 @@ HTML = """\
 
       --color-accent: var(--accent);
       --color-accent-hover: var(--accent-hover);
+      --color-accent-active: var(--accent-active);
       --color-accent-soft: var(--accent-soft);
 
       --color-positive: var(--positive);
@@ -1280,6 +1295,7 @@ HTML = """\
       --radius-md: var(--r-md);
       --radius-lg: var(--r-lg);
       --radius-xl: var(--r-xl);
+      --radius-card: var(--r-card);
 
       --shadow-xs: var(--elev-xs);
       --shadow-sm: var(--elev-sm);
@@ -1298,6 +1314,7 @@ HTML = """\
       --tracking-label: var(--ls-label);
       --tracking-title: var(--ls-title);
       --tracking-figure: var(--ls-figure);
+      --tracking-heading: var(--ls-heading);
 
       --ease-swift: var(--ease-out-expo);
       --ease-std: var(--ease-standard);
@@ -1328,7 +1345,19 @@ HTML = """\
 
       ::selection {
         background: var(--accent-soft);
-        color: var(--fg);
+        color: var(--accent);
+      }
+
+      /* Headings carry hierarchy through size and colour, not weight. */
+      h1, h2, h3, h4 {
+        font-weight: 500;
+        letter-spacing: var(--ls-heading);
+      }
+
+      /* One focus treatment everywhere: an accent ring, never removed. */
+      :focus-visible {
+        outline: var(--ring-w) solid var(--accent);
+        outline-offset: 3px;
       }
 
       /* Native spinners make a kcal field look like a form, not a figure. */
@@ -1383,16 +1412,19 @@ HTML = """\
           box-shadow var(--dur-med) var(--ease-standard) !important;
       }
 
+      /* Depth is tonal: the card reads as a card because it is a different
+         rung on the surface ramp, not because it casts a shadow. */
       .card {
         background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: var(--r-lg);
-        box-shadow: var(--elev-sm);
+        border: 0;
+        border-radius: var(--r-card);
+        box-shadow: none;
+        transition: background-color var(--dur-med) var(--ease-standard);
       }
 
       .panel {
         background: var(--raised);
-        border: 1px solid var(--line);
+        border: 0;
         border-radius: var(--r-md);
       }
 
@@ -1408,7 +1440,7 @@ HTML = """\
       .figure {
         font-variant-numeric: tabular-nums;
         letter-spacing: var(--ls-figure);
-        font-weight: 600;
+        font-weight: 500;
       }
 
       /* ── Buttons ────────────────────────────────────────────── */
@@ -1418,8 +1450,8 @@ HTML = """\
         justify-content: center;
         gap: 0.4rem;
         flex-shrink: 0;
-        border: 1px solid transparent;
-        border-radius: var(--r-md);
+        border: 0;
+        border-radius: var(--r-full);
         font-family: inherit;
         font-weight: 500;
         white-space: nowrap;
@@ -1429,44 +1461,38 @@ HTML = """\
           background-color var(--dur-fast) var(--ease-standard),
           border-color var(--dur-fast) var(--ease-standard),
           color var(--dur-fast) var(--ease-standard),
-          opacity var(--dur-fast) var(--ease-standard),
-          transform var(--dur-fast) var(--ease-standard);
-      }
-      .btn:focus-visible {
-        outline: none;
-        box-shadow: 0 0 0 var(--ring-w) var(--accent-soft);
+          opacity var(--dur-fast) var(--ease-standard);
       }
       .btn:disabled {
         opacity: 0.45;
         pointer-events: none;
       }
-      .btn:not(:disabled):active {
-        transform: scale(0.97);
-      }
 
-      .btn-sm { height: var(--control-h-sm); padding-inline: 0.55rem; font-size: var(--fs-mini); }
-      .btn-md { height: var(--control-h-md); padding-inline: 0.7rem; font-size: 0.75rem; }
-      .btn-lg { height: var(--control-h-lg); padding-inline: 0.9rem; font-size: 0.8125rem; }
+      .btn-sm { height: var(--control-h-sm); padding-inline: 0.7rem; font-size: var(--fs-mini); }
+      .btn-md { height: var(--control-h-md); padding-inline: 0.9rem; font-size: 0.75rem; }
+      .btn-lg { height: var(--control-h-lg); padding-inline: 1.15rem; font-size: 0.8125rem; }
       .btn-icon { padding-inline: 0; aspect-ratio: 1 / 1; }
 
       .btn-primary { background: var(--accent); color: var(--on-accent); }
       .btn-primary:hover { background: var(--accent-hover); }
+      .btn-primary:not(:disabled):active { background: var(--accent-active); }
 
-      .btn-outline { background: var(--surface); border-color: var(--line); color: var(--fg); }
-      .btn-outline:hover { background: var(--hover); border-color: var(--line-strong); }
+      /* Secondary fills step along the ramp on hover — no lift, no border. */
+      .btn-outline { background: var(--sunken); color: var(--fg); }
+      .btn-outline:hover { background: var(--hover); }
 
       .btn-ghost { color: var(--fg-muted); }
-      .btn-ghost:hover { background: var(--hover); color: var(--fg); }
+      .btn-ghost:hover { background: var(--hover); color: var(--fg-strong); }
 
-      .btn-soft { background: var(--raised); color: var(--fg); border-color: var(--line); }
-      .btn-soft:hover { background: var(--sunken); }
+      .btn-soft { background: var(--sunken); color: var(--fg); }
+      .btn-soft:hover { background: var(--hover); }
 
       .btn-danger { background: var(--danger-soft); color: var(--danger); }
       .btn-danger:hover { background: var(--danger); color: var(--on-accent); }
 
       /* ── Fields ─────────────────────────────────────────────── */
       .field {
-        background: var(--raised);
+        background: var(--canvas);
         border: 1px solid var(--line);
         border-radius: var(--r-md);
         color: var(--fg);
@@ -1480,25 +1506,62 @@ HTML = """\
       }
       .field::placeholder { color: var(--fg-subtle); }
       .field:focus {
-        outline: none;
-        background: var(--surface);
+        outline: var(--ring-w) solid var(--accent);
+        outline-offset: -1px;
         border-color: var(--accent);
-        box-shadow: 0 0 0 var(--ring-w) var(--accent-soft);
       }
       .field:disabled { opacity: 0.55; cursor: not-allowed; }
       .field-sm { font-size: var(--fs-mini); padding: 0.25rem 0.45rem; }
+
+      /* ── Composer ─────────────────────────────────── */
+      /* Adding an entry is one thought, so it reads as one control: a single
+         recessed pill holding both fields and the submit, rather than three
+         bordered boxes sitting next to each other. */
+      .composer {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        padding: 0.25rem;
+        background: var(--canvas);
+        border: 0;
+        border-radius: var(--r-full);
+        transition: background-color var(--dur-fast) var(--ease-standard);
+      }
+      .composer:focus-within {
+        outline: var(--ring-w) solid var(--accent);
+        outline-offset: 2px;
+      }
+      .composer-input {
+        height: var(--control-h-lg);
+        min-width: 0;
+        padding-inline: 0.85rem;
+        background: transparent;
+        border: 0;
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 0.8125rem;
+      }
+      .composer-input:focus { outline: none; }
+      .composer-input::placeholder { color: var(--fg-subtle); }
+      .composer-input:disabled { opacity: 0.55; cursor: not-allowed; }
+      .composer-rule {
+        flex: none;
+        width: 1px;
+        height: 1.15rem;
+        background: var(--line-strong);
+      }
 
       /* ── Segmented control ──────────────────────────────────── */
       .seg {
         display: inline-flex;
         gap: 2px;
         padding: 2px;
-        background: var(--raised);
-        border: 1px solid var(--line);
-        border-radius: var(--r-md);
+        background: var(--sunken);
+        border: 0;
+        border-radius: var(--r-full);
       }
       .seg-item {
-        border-radius: var(--r-xs);
+        border-radius: var(--r-full);
         padding: 0.2rem 0.55rem;
         font-size: var(--fs-mini);
         font-weight: 500;
@@ -1508,20 +1571,17 @@ HTML = """\
           background-color var(--dur-fast) var(--ease-standard),
           color var(--dur-fast) var(--ease-standard);
       }
-      .seg-item:hover { color: var(--fg); }
+      .seg-item:hover { color: var(--fg-strong); }
       .seg-item[data-on="true"] {
-        background: var(--surface);
-        color: var(--fg);
-        box-shadow: var(--elev-xs);
-      }
-      .seg-item:focus-visible {
-        outline: none;
-        box-shadow: 0 0 0 var(--ring-w) var(--accent-soft);
+        background: var(--canvas);
+        color: var(--fg-strong);
+        box-shadow: none;
       }
 
       /* ── Entry row ──────────────────────────────────────────── */
       .row {
         border-radius: var(--r-md);
+        /* fallthrough: the only hover feedback is a fill step */
         transition: background-color var(--dur-fast) var(--ease-standard);
       }
       .row:hover { background: var(--hover); }
@@ -1543,9 +1603,9 @@ HTML = """\
         animation: scrim-in var(--dur-med) var(--ease-standard);
       }
       .dialog {
-        background: var(--surface);
+        background: var(--canvas);
         border: 1px solid var(--line);
-        border-radius: var(--r-xl);
+        border-radius: var(--r-lg);
         box-shadow: var(--elev-lg);
         animation: dialog-in var(--dur-slow) var(--ease-out-expo);
       }
@@ -1554,10 +1614,9 @@ HTML = """\
         display: inline-block;
         min-width: 1.25rem;
         padding: 0.05rem 0.3rem;
-        border: 1px solid var(--line);
-        border-bottom-width: 2px;
+        border: 0;
         border-radius: var(--r-xs);
-        background: var(--raised);
+        background: var(--sunken);
         color: var(--fg-muted);
         font-family: inherit;
         font-size: var(--fs-micro);
@@ -2026,7 +2085,7 @@ HTML = """\
             <span className="text-fg-muted">
               <span className="font-medium text-fg">{total}</span> of {limit} kcal
             </span>
-            <span className={over ? `font-semibold ${statusTextColor[status]}` : statusTextColor[status] || "text-fg-muted"}>
+            <span className={over ? `font-medium ${statusTextColor[status]}` : statusTextColor[status] || "text-fg-muted"}>
               {over ? `${Math.abs(remaining)} over` : `${remaining} left`}
             </span>
           </div>
@@ -2070,7 +2129,7 @@ HTML = """\
           <button onClick={() => setEditing(true)} className="btn btn-sm btn-ghost gap-1.5">
             <span className="text-fg-subtle">{label}</span>
             {current !== null ? (
-              <span className="font-semibold tabular-nums text-fg">{current}</span>
+              <span className="font-medium tabular-nums text-fg">{current}</span>
             ) : (
               <span className="text-fg-subtle">— set</span>
             )}
@@ -2181,7 +2240,7 @@ HTML = """\
       return (
         <div className="flex items-center justify-end gap-2">
           <span className="text-micro text-fg-subtle">{label}</span>
-          <span className={`inline-flex items-center gap-0.5 text-xs font-semibold tabular-nums ${trendColor[trend]}`}>
+          <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular-nums ${trendColor[trend]}`}>
             <TrendArrow trend={trend} size={12} />
             {formatGrams(grams)}
           </span>
@@ -2300,26 +2359,27 @@ HTML = """\
 
       return (
         <div>
-          <form onSubmit={handleSubmit(onSubmit)} className="flex items-center gap-2">
+          <form onSubmit={handleSubmit(onSubmit)} className="composer">
             <input
               type="number"
               placeholder="kcal"
               {...register("kcal", { required: true, min: 1 })}
               disabled={mutation.isPending}
-              className="field w-[4.5rem] shrink-0 text-center tabular-nums"
+              className="composer-input w-[4.75rem] shrink-0 text-center tabular-nums"
             />
+            <span aria-hidden="true" className="composer-rule" />
             <input
               type="text"
               placeholder="What did you eat?"
               {...register("description", { required: true, validate: (v) => v.trim().length > 0 })}
               disabled={mutation.isPending}
-              className="field min-w-0 flex-1"
+              className="composer-input min-w-0 flex-1"
             />
             <button
               type="submit"
               disabled={mutation.isPending || !isValid}
               aria-label="Add entry"
-              className="btn btn-primary btn-icon btn-lg"
+              className="btn btn-primary btn-icon btn-lg ml-1"
             >
               <Icon path={ICONS.plus} size={16} />
             </button>
@@ -2382,7 +2442,7 @@ HTML = """\
           {MACROS.map((m, i) => (
             <span key={m.key} className="inline-flex items-center gap-1">
               {i > 0 && <span className="text-line-strong">·</span>}
-              <span className={i === 0 ? "font-semibold text-fg-muted" : ""}>
+              <span className={i === 0 ? "font-medium text-fg-muted" : ""}>
                 {fmtGrams(entry.macros[m.key])}
               </span>
               <span>{m.short}</span>
@@ -2407,7 +2467,7 @@ HTML = """\
           {MACROS.map((m, i) => (
             <span key={m.key} className="inline-flex items-center gap-1">
               {i > 0 && <span className="text-line-strong">·</span>}
-              <span className="font-semibold text-fg">{fmtGrams(data.total_macros[m.key])}</span>
+              <span className="font-medium text-fg">{fmtGrams(data.total_macros[m.key])}</span>
               <span>{m.label.toLowerCase()}</span>
             </span>
           ))}
@@ -2438,7 +2498,7 @@ HTML = """\
               className={`flex min-w-0 items-baseline gap-3 ${canExpand ? "cursor-pointer" : ""}`}
             >
               <span className="w-11 shrink-0 text-mini tabular-nums text-fg-subtle">{entry.time}</span>
-              <span className="w-12 shrink-0 text-right text-sm font-semibold tabular-nums text-fg">
+              <span className="w-12 shrink-0 text-right text-sm font-medium tabular-nums text-fg">
                 {entry.kcal}
               </span>
               <span className="break-words text-sm text-fg">{entry.description}</span>
@@ -2490,7 +2550,7 @@ HTML = """\
               <div className="mt-1 flex gap-2 border-t border-line pt-1 text-fg">
                 <span className="flex-1 font-medium">Total</span>
                 {MACROS.map((m) => (
-                  <span key={m.key} className="w-12 shrink-0 text-right font-semibold tabular-nums">
+                  <span key={m.key} className="w-12 shrink-0 text-right font-medium tabular-nums">
                     {fmtGrams(entry.macros[m.key])}
                   </span>
                 ))}
@@ -2689,7 +2749,7 @@ HTML = """\
                   <Icon path={view.icon} size={18} />
                 </span>
                 <div>
-                  <div className={`text-lg font-semibold ${view.color}`}>{view.headline}</div>
+                  <div className={`text-lg font-medium ${view.color}`}>{view.headline}</div>
                   <div className="mt-0.5 text-mini text-fg-muted">{view.detail}</div>
                 </div>
               </div>
@@ -2723,7 +2783,7 @@ HTML = """\
                 <span className="text-xs font-medium text-fg-subtle">kcal</span>
               </div>
               {isOver && (
-                <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-danger-soft px-2 py-0.5 text-micro font-semibold uppercase tracking-label text-danger">
+                <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium uppercase tracking-label text-danger">
                   <Icon path={ICONS.flame} size={11} />
                   Over limit
                 </div>
@@ -2788,7 +2848,7 @@ HTML = """\
                 <Icon path={ICONS.sparkles} size={17} />
               </span>
               <div>
-                <h2 className="text-sm font-semibold text-fg">Kcal estimator</h2>
+                <h2 className="text-sm font-medium text-fg-strong">Kcal estimator</h2>
                 <p className="text-mini text-fg-muted">Ask, don't track</p>
               </div>
             </div>
@@ -2838,7 +2898,7 @@ HTML = """\
                   {MACROS.map((m, i) => (
                     <span key={m.key} className="inline-flex items-center gap-1">
                       {i > 0 && <span className="text-line-strong">·</span>}
-                      <span className="font-semibold text-fg">{fmtGrams(mutation.data.macros[m.key])}</span>
+                      <span className="font-medium text-fg">{fmtGrams(mutation.data.macros[m.key])}</span>
                       <span>{m.label.toLowerCase()}</span>
                     </span>
                   ))}
@@ -2865,10 +2925,10 @@ HTML = """\
                       </div>
                     ))}
                     <div className="mt-1 flex gap-3 border-t border-line-strong py-1.5 text-fg">
-                      <span className="flex-1 font-semibold">Total</span>
-                      <span className="w-14 shrink-0 text-right font-semibold tabular-nums">{mutation.data.kcal}</span>
+                      <span className="flex-1 font-medium">Total</span>
+                      <span className="w-14 shrink-0 text-right font-medium tabular-nums">{mutation.data.kcal}</span>
                       {MACROS.map((m) => (
-                        <span key={m.key} className="w-12 shrink-0 text-right font-semibold tabular-nums">
+                        <span key={m.key} className="w-12 shrink-0 text-right font-medium tabular-nums">
                           {fmtGrams(mutation.data.macros[m.key])}
                         </span>
                       ))}
@@ -3000,7 +3060,7 @@ HTML = """\
             >
               {/* Title */}
               <div className="flex h-8 items-center pr-12">
-                <h1 className="text-micro font-semibold uppercase tracking-title text-fg-muted">
+                <h1 className="text-micro font-medium uppercase tracking-title text-fg-muted">
                   Kcal Tracker
                 </h1>
               </div>
@@ -3016,7 +3076,7 @@ HTML = """\
                 </button>
 
                 <div className="min-w-0 text-center">
-                  <div className="truncate text-sm font-semibold text-fg">{formatDate(date)}</div>
+                  <div className="truncate text-sm font-medium text-fg">{formatDate(date)}</div>
                   <div className="mt-0.5 truncate text-mini tabular-nums text-fg-subtle">{dateSubtitle(date)}</div>
                 </div>
 
