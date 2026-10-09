@@ -1773,33 +1773,114 @@ HTML = """\
       }, [queryClient, date]);
     }
 
+    // ── Morning input lock ───────────────────────────────────────
+
+    const INPUT_UNLOCK_HOUR = 13;
+    const INPUT_LOCK_MESSAGE = "All inputs are locked until 1:00 PM local time.";
+
+    function isMorningInputLocked(now: Date = new Date()): boolean {
+      return now.getHours() < INPUT_UNLOCK_HOUR;
+    }
+
+    function requireInputWindow(): void {
+      // Recheck at request time, even if a tab slept through midnight.
+      if (isMorningInputLocked()) throw new Error(INPUT_LOCK_MESSAGE);
+    }
+
+    function useMorningInputLock(): boolean {
+      const [locked, setLocked] = useState(() => isMorningInputLocked());
+
+      useEffect(() => {
+        let boundaryTimer = 0;
+        const refresh = () => {
+          const now = new Date();
+          const lockedNow = isMorningInputLocked(now);
+          setLocked(lockedNow);
+          const boundary = new Date(now);
+          boundary.setHours(lockedNow ? INPUT_UNLOCK_HOUR : 24, 0, 0, 0);
+          window.clearTimeout(boundaryTimer);
+          boundaryTimer = window.setTimeout(refresh, boundary.getTime() - now.getTime());
+        };
+        // Capture edits before React handles them if a boundary timer is delayed.
+        const blockMorningEdit = (event: Event) => {
+          const target = event.target;
+          if (!isMorningInputLocked() || !(target instanceof HTMLElement) ||
+              !target.closest("input, textarea, select, form, [contenteditable=true]")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          refresh();
+        };
+        const editEvents = ["beforeinput", "input", "keydown", "paste", "drop", "click", "submit"];
+        refresh();
+        const timer = window.setInterval(refresh, 1000);
+        window.addEventListener("focus", refresh);
+        document.addEventListener("visibilitychange", refresh);
+        editEvents.forEach((name) => document.addEventListener(name, blockMorningEdit, true));
+        return () => {
+          window.clearTimeout(boundaryTimer);
+          window.clearInterval(timer);
+          window.removeEventListener("focus", refresh);
+          document.removeEventListener("visibilitychange", refresh);
+          editEvents.forEach((name) => document.removeEventListener(name, blockMorningEdit, true));
+        };
+      }, []);
+
+      return locked;
+    }
+
     // ── API client ──────────────────────────────────────────────
 
-    const api = ky.create({ prefix: "/api" });
+    const api = ky.create({
+      prefix: "/api",
+      hooks: {
+        beforeRequest: [({ request }) => {
+          if (request.method !== "GET") requireInputWindow();
+        }],
+        beforeRetry: [({ request }) => {
+          if (request.method !== "GET") requireInputWindow();
+        }],
+      },
+    });
 
     const kcalClient = {
       getDay: (date: string) => api.get(`days/${date}`).json<DayData>(),
-      addEntry: (data: { kcal: number; description: string; date: string; time: string }) =>
-        api.post("entries", { json: data }).json<Entry>(),
-      deleteEntry: (id: number) => api.delete(`entries/${id}`),
-      retryMacros: (id: number) => api.post(`entries/${id}/macros`).json<Entry>(),
-      setLimit: (data: { limit: number; date: string }) =>
-        api.put("limits", { json: data }).json<{ date: string; limit: number }>(),
-      setBurn: (data: { burn: number; date: string }) =>
-        api.put("burns", { json: data }).json<{ date: string; burn: number }>(),
-      setDayMark: (data: { mark: DayMark | null; date: string }) =>
-        api.put("day-mark", { json: data }).json<{ date: string; mark: DayMark | null }>(),
+      addEntry: (data: { kcal: number; description: string; date: string; time: string }) => {
+        requireInputWindow();
+        return api.post("entries", { json: data }).json<Entry>();
+      },
+      deleteEntry: (id: number) => {
+        requireInputWindow();
+        return api.delete(`entries/${id}`);
+      },
+      retryMacros: (id: number) => {
+        requireInputWindow();
+        return api.post(`entries/${id}/macros`).json<Entry>();
+      },
+      setLimit: (data: { limit: number; date: string }) => {
+        requireInputWindow();
+        return api.put("limits", { json: data }).json<{ date: string; limit: number }>();
+      },
+      setBurn: (data: { burn: number; date: string }) => {
+        requireInputWindow();
+        return api.put("burns", { json: data }).json<{ date: string; burn: number }>();
+      },
+      setDayMark: (data: { mark: DayMark | null; date: string }) => {
+        requireInputWindow();
+        return api.put("day-mark", { json: data }).json<{ date: string; mark: DayMark | null }>();
+      },
       getCumulative: () =>
         api.get("cumulative").json<{ total_grams: number; days_counted: number; days_excluded: number }>(),
       getAverage: (days: number) =>
         api.get(`average/${days}`).json<{ days_requested: number; days_counted: number; days_excluded: number; average_kcal: number }>(),
-      estimate: (description: string) =>
-        api.post("estimate", { json: { description } }).json<{
+      estimate: (description: string) => {
+        requireInputWindow();
+        return api.post("estimate", { json: { description } }).json<{
           kcal: number;
           macros: Macros;
           items: { name: string; grams: number; kcal: number; protein_g: number; fat_g: number; fiber_g: number }[];
           note: string;
-        }>(),
+        }>();
+      },
     } as const;
 
     // ── Icons ────────────────────────────────────────────────────
@@ -3026,6 +3107,28 @@ HTML = """\
 
     // ── App ──────────────────────────────────────────────────────
 
+    function MorningInputLock() {
+      return (
+        <section
+          role="alert"
+          aria-labelledby="morning-lock-title"
+          className="rounded-card border-2 border-danger bg-danger-soft p-6 text-center text-danger sm:p-8"
+        >
+          <div className="mb-4 flex justify-center">
+            <Icon path={ICONS.ban} size={40} />
+          </div>
+          <p className="text-xs font-semibold uppercase tracking-label">Morning lock</p>
+          <h2 id="morning-lock-title" className="mt-3 text-3xl font-bold leading-tight tracking-heading">
+            Locked until 1:00 PM
+          </h2>
+          <p className="mt-4 text-sm leading-relaxed">
+            All inputs and the kcal estimator are unavailable before 1:00 PM local time.
+          </p>
+          <p className="mt-3 text-xs font-medium">Unlocks automatically. No overrides.</p>
+        </section>
+      );
+    }
+
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: 1 },
@@ -3034,14 +3137,16 @@ HTML = """\
 
     function App() {
       const [date, setDate] = useState(todayStr());
+      const inputsLocked = useMorningInputLock();
 
       const goBack = useCallback(() => setDate((d) => shiftDate(d, -1)), []);
       const goForward = useCallback(() => setDate((d) => shiftDate(d, 1)), []);
       const goToday = useCallback(() => setDate(todayStr()), []);
 
       useEffect(() => {
+        if (inputsLocked) return;
         const handler = (e: KeyboardEvent) => {
-          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          if (isMorningInputLocked() || e.metaKey || e.ctrlKey || e.altKey) return;
           // Do not hijack arrow keys used for cursor movement inside a field.
           const target = e.target as HTMLElement | null;
           if (
@@ -3056,7 +3161,7 @@ HTML = """\
         };
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-      }, [goBack, goForward]);
+      }, [inputsLocked, goBack, goForward]);
 
       const isToday = date === todayStr();
 
@@ -3076,6 +3181,7 @@ HTML = """\
                 </h1>
               </div>
 
+              {inputsLocked ? <MorningInputLock /> : <>
               {/* Date navigation */}
               <div className="card flex items-center justify-between gap-2 px-2.5 py-2.5">
                 <button
@@ -3146,6 +3252,7 @@ HTML = """\
                 <kbd>→</kbd>
                 <span>to change day</span>
               </div>
+              </>}
             </div>
           </div>
         </QueryClientProvider>
